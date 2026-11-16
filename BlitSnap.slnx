@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="BlitSnap/BlitSnap.vcxproj" Id="4736a277-eb2a-4d72-826a-b19f6c50bc6d" />
+</Solution>
