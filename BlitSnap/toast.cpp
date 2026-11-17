@@ -1,5 +1,6 @@
 #include "toast.h"
 #include "export.h"
+#include "config.h"
 #include <shlobj.h>
 #include <propsys.h>
 #include <propkey.h>
@@ -180,7 +181,7 @@ static std::wstring BuildXmlSafeFileUri(const wchar_t* filePath) {
 }
 
 void ShowCaptureToast(const wchar_t* pngPath) {
-    if (!pngPath || !pngPath[0]) return;
+    if (!g_config.showToast || !pngPath || !pngPath[0]) return;
 
     std::wstring imageUri = BuildXmlSafeFileUri(pngPath);
     std::wstring xmlPayload =
@@ -272,6 +273,15 @@ void LaunchEditorForLatestCapture() {
     wchar_t cmdLine[MAX_PATH * 2 + 32] = {};
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = {};
+
+    if (!g_config.editorPath.empty() && GetFileAttributesW(g_config.editorPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        swprintf_s(cmdLine, L"\"%s\" \"%s\"", g_config.editorPath.c_str(), pngPath);
+        if (CreateProcessW(g_config.editorPath.c_str(), cmdLine, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            return;
+        }
+    }
 
     if (editorExe[0] && GetFileAttributesW(editorExe) != INVALID_FILE_ATTRIBUTES) {
         swprintf_s(cmdLine, L"\"%s\" --from-snap \"%s\"", editorExe, pngPath);

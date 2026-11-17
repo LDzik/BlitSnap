@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 
+static HFONT g_hLoupeFont = nullptr;
+
 static void InvalidateAllOverlays() {
     for (const auto& mon : g_app.overlays) {
         if (mon.hWnd) {
@@ -16,6 +18,10 @@ static void InvalidateAllOverlays() {
         }
     }
     RepaintToolbar();
+}
+
+void RefreshOverlayVisuals() {
+    InvalidateAllOverlays();
 }
 
 static RECT GetNormalizedSelectionRect() {
@@ -79,6 +85,220 @@ static void DrawSelectionBoxOnMonitor(MonitorOverlay& mon, const RECT& rcBox, in
     DeleteObject(hBrush);
 }
 
+static void DrawPixelLoupeOnMonitor(MonitorOverlay& mon) {
+    if (!g_app.showLoupe || g_app.mode != CaptureMode::Region) return;
+    if (!PtInRect(&mon.rect, g_app.ptCursor)) return;
+
+    constexpr int kGridCount = 9;
+    constexpr int kHalfGrid = kGridCount / 2;
+
+    HDC hScreen = GetDC(nullptr);
+    int dpi = GetDeviceCaps(hScreen, LOGPIXELSX);
+    ReleaseDC(nullptr, hScreen);
+    if (dpi <= 0) dpi = 96;
+
+    int cellPx = std::max(8, MulDiv(10, dpi, 96));
+    int gridPx = kGridCount * cellPx;
+    int footerH = MulDiv(34, dpi, 96);
+    int boxW = gridPx + 2;
+    int boxH = gridPx + footerH + 2;
+    int offset = MulDiv(16, dpi, 96);
+
+    int boxX = g_app.ptCursor.x + offset;
+    int boxY = g_app.ptCursor.y + offset;
+    if (boxX + boxW > mon.rect.right) {
+        boxX = g_app.ptCursor.x - boxW - offset;
+    }
+    if (boxY + boxH > mon.rect.bottom) {
+        boxY = g_app.ptCursor.y - boxH - offset;
+    }
+
+    int localX = boxX - mon.rect.left;
+    int localY = boxY - mon.rect.top;
+
+    RECT rcOuter = { localX, localY, localX + boxW, localY + boxH };
+    HBRUSH hFrameBg = CreateSolidBrush(RGB(26, 26, 26));
+    FillRect(mon.hBackDC, &rcOuter, hFrameBg);
+    DeleteObject(hFrameBg);
+
+    COLORREF centerRgb = RGB(0, 0, 0);
+
+    for (int gy = 0; gy < kGridCount; ++gy) {
+        int srcY = (g_app.ptCursor.y - kHalfGrid + gy) - g_app.pristine.vy;
+        for (int gx = 0; gx < kGridCount; ++gx) {
+            int srcX = (g_app.ptCursor.x - kHalfGrid + gx) - g_app.pristine.vx;
+
+            COLORREF c = RGB(20, 20, 20);
+            if (srcX >= 0 && srcX < g_app.pristine.width &&
+                srcY >= 0 && srcY < g_app.pristine.height) {
+                uint32_t bgra = g_app.pristine.pixels[static_cast<size_t>(srcY) * g_app.pristine.width + srcX];
+                uint8_t r = (bgra >> 16) & 0xFFu;
+                uint8_t g = (bgra >> 8) & 0xFFu;
+                uint8_t b = bgra & 0xFFu;
+                c = RGB(r, g, b);
+            }
+
+            if (gx == kHalfGrid && gy == kHalfGrid) {
+                centerRgb = c;
+            }
+
+            RECT rcCell = {
+                localX + 1 + gx * cellPx,
+                localY + 1 + gy * cellPx,
+                localX + 1 + (gx + 1) * cellPx,
+                localY + 1 + (gy + 1) * cellPx
+            };
+            HBRUSH hCell = CreateSolidBrush(c);
+            FillRect(mon.hBackDC, &rcCell, hCell);
+            DeleteObject(hCell);
+        }
+    }
+
+    HPEN hGridPen = CreatePen(PS_SOLID, 1, RGB(50, 50, 50));
+    HGDIOBJ oldPen = SelectObject(mon.hBackDC, hGridPen);
+    for (int i = 1; i < kGridCount; ++i) {
+        int px = localX + 1 + i * cellPx;
+        int py = localY + 1 + i * cellPx;
+        MoveToEx(mon.hBackDC, px, localY + 1, nullptr);
+        LineTo(mon.hBackDC, px, localY + 1 + gridPx);
+        MoveToEx(mon.hBackDC, localX + 1, py, nullptr);
+        LineTo(mon.hBackDC, localX + 1 + gridPx, py);
+    }
+    SelectObject(mon.hBackDC, oldPen);
+    DeleteObject(hGridPen);
+
+    RECT rcCenter = {
+        localX + 1 + kHalfGrid * cellPx,
+        localY + 1 + kHalfGrid * cellPx,
+        localX + 1 + (kHalfGrid + 1) * cellPx + 1,
+        localY + 1 + (kHalfGrid + 1) * cellPx + 1
+    };
+    HBRUSH hRetOuter = CreateSolidBrush(RGB(255, 255, 255));
+    FrameRect(mon.hBackDC, &rcCenter, hRetOuter);
+    DeleteObject(hRetOuter);
+
+    InflateRect(&rcCenter, -1, -1);
+    HBRUSH hRetInner = CreateSolidBrush(kAccentColor);
+    FrameRect(mon.hBackDC, &rcCenter, hRetInner);
+    DeleteObject(hRetInner);
+
+    wchar_t line1[32] = {};
+    wchar_t line2[32] = {};
+    swprintf_s(line1, L"#%02X%02X%02X",
+        GetRValue(centerRgb), GetGValue(centerRgb), GetBValue(centerRgb));
+
+    if (g_app.isDragging && !g_app.dragCancelArm) {
+        RECT rcSel = GetNormalizedSelectionRect();
+        swprintf_s(line2, L"%d x %d", rcSel.right - rcSel.left, rcSel.bottom - rcSel.top);
+    }
+    else {
+        swprintf_s(line2, L"%d, %d", g_app.ptCursor.x, g_app.ptCursor.y);
+    }
+
+    HGDIOBJ oldFont = g_hLoupeFont ? SelectObject(mon.hBackDC, g_hLoupeFont) : nullptr;
+    SetBkMode(mon.hBackDC, TRANSPARENT);
+
+    RECT rcText1 = { localX + 4, localY + gridPx + 3, localX + boxW - 4, localY + gridPx + footerH / 2 + 2 };
+    SetTextColor(mon.hBackDC, RGB(240, 240, 240));
+    DrawTextW(mon.hBackDC, line1, -1, &rcText1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    RECT rcText2 = { localX + 4, localY + gridPx + footerH / 2 + 1, localX + boxW - 4, localY + boxH - 2 };
+    SetTextColor(mon.hBackDC, RGB(155, 155, 155));
+    DrawTextW(mon.hBackDC, line2, -1, &rcText2, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    if (oldFont) SelectObject(mon.hBackDC, oldFont);
+
+    HBRUSH hOuterBorder = CreateSolidBrush(RGB(75, 75, 75));
+    FrameRect(mon.hBackDC, &rcOuter, hOuterBorder);
+    DeleteObject(hOuterBorder);
+}
+
+static void DrawCancelIndicatorOnMonitor(MonitorOverlay& mon) {
+    if (!g_app.isDragging) return;
+    if (!PtInRect(&mon.rect, g_app.ptOrigin)) return;
+
+    int ox = g_app.ptOrigin.x - mon.rect.left;
+    int oy = g_app.ptOrigin.y - mon.rect.top;
+
+    RECT rcDot = { ox - 3, oy - 3, ox + 4, oy + 4 };
+    HBRUSH hDot = CreateSolidBrush(g_app.dragCancelArm ? RGB(232, 17, 35) : kAccentColor);
+    FillRect(mon.hBackDC, &rcDot, hDot);
+    DeleteObject(hDot);
+
+    if (!g_app.hasLeftDeadzone || !g_app.dragCancelArm) return;
+
+    int badgeW = 128;
+    int badgeH = 26;
+    int bx = ox + 12;
+    int by = oy - badgeH - 10;
+
+    int monW = mon.rect.right - mon.rect.left;
+    int monH = mon.rect.bottom - mon.rect.top;
+    if (bx + badgeW > monW - 8) bx = ox - badgeW - 12;
+    if (by < 8)                 by = oy + 12;
+    if (by + badgeH > monH - 8) by = monH - badgeH - 8;
+
+    RECT rcBadge = { bx, by, bx + badgeW, by + badgeH };
+    HBRUSH hBg = CreateSolidBrush(RGB(30, 30, 30));
+    FillRect(mon.hBackDC, &rcBadge, hBg);
+    DeleteObject(hBg);
+
+    HBRUSH hBorder = CreateSolidBrush(RGB(232, 17, 35));
+    FrameRect(mon.hBackDC, &rcBadge, hBorder);
+    DeleteObject(hBorder);
+
+    HFONT hFont = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HGDIOBJ oldFont = SelectObject(mon.hBackDC, hFont);
+    SetBkMode(mon.hBackDC, TRANSPARENT);
+    SetTextColor(mon.hBackDC, RGB(240, 240, 240));
+    DrawTextW(mon.hBackDC, L"Release to cancel", -1, &rcBadge, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(mon.hBackDC, oldFont);
+    DeleteObject(hFont);
+}
+
+static void DrawPillSnapIndicatorsOnMonitor(MonitorOverlay& mon) {
+    if (!g_app.isDraggingPill) return;
+
+    HFONT hFont = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HGDIOBJ oldFont = SelectObject(mon.hBackDC, hFont);
+    SetBkMode(mon.hBackDC, TRANSPARENT);
+
+    for (int i = 0; i < 4; ++i) {
+        RECT rcAnchor = {};
+        if (!GetPillAnchorRect(i, rcAnchor)) continue;
+
+        RECT rcVis = {};
+        if (!IntersectRect(&rcVis, &rcAnchor, &mon.rect)) continue;
+
+        RECT rcLocal = {
+            rcAnchor.left - mon.rect.left,
+            rcAnchor.top - mon.rect.top,
+            rcAnchor.right - mon.rect.left,
+            rcAnchor.bottom - mon.rect.top
+        };
+
+        bool isTarget = (i == g_app.pillSnapPreview);
+        HBRUSH hFill = CreateSolidBrush(isTarget ? RGB(24, 48, 72) : RGB(28, 28, 28));
+        FillRect(mon.hBackDC, &rcLocal, hFill);
+        DeleteObject(hFill);
+
+        HBRUSH hBrd = CreateSolidBrush(isTarget ? kAccentColor : RGB(95, 95, 95));
+        FrameRect(mon.hBackDC, &rcLocal, hBrd);
+        DeleteObject(hBrd);
+
+        SetTextColor(mon.hBackDC, isTarget ? RGB(255, 255, 255) : RGB(160, 160, 160));
+        DrawTextW(mon.hBackDC, isTarget ? L"Drop to snap here" : L"Snap zone",
+            -1, &rcLocal, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    SelectObject(mon.hBackDC, oldFont);
+    DeleteObject(hFont);
+}
+
 static void PaintMonitorOverlay(MonitorOverlay& mon, HDC hPaintDC) {
     int monW = mon.rect.right - mon.rect.left;
     int monH = mon.rect.bottom - mon.rect.top;
@@ -97,6 +317,10 @@ static void PaintMonitorOverlay(MonitorOverlay& mon, HDC hPaintDC) {
             DrawSelectionBoxOnMonitor(mon, g_app.rcHoveredWin, 2);
         }
     }
+
+    DrawCancelIndicatorOnMonitor(mon);
+    DrawPillSnapIndicatorsOnMonitor(mon);
+    DrawPixelLoupeOnMonitor(mon);
 
     BitBlt(hPaintDC, 0, 0, monW, monH, mon.hBackDC, 0, 0, SRCCOPY);
 }
@@ -176,8 +400,12 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         return 0;
     }
 
+    case WM_RBUTTONDOWN:
     case WM_RBUTTONUP: {
         if (!pMon) return 0;
+
+        if (g_app.isDragging) return 0;
+
         POINT pt = { pMon->rect.left + GET_X_LPARAM(lParam), pMon->rect.top + GET_Y_LPARAM(lParam) };
         ToggleCaptureMode(pt);
         return 0;
@@ -199,6 +427,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         g_app.ptCurrent = pt;
         g_app.isDragging = true;
         g_app.dragCancelArm = true;
+        g_app.hasLeftDeadzone = false;
 
         SetCapture(hWnd);
         SetToolbarVisible(false);
@@ -209,6 +438,17 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
     case WM_MOUSEMOVE: {
         if (!pMon) return 0;
         POINT pt = { pMon->rect.left + GET_X_LPARAM(lParam), pMon->rect.top + GET_Y_LPARAM(lParam) };
+        g_app.ptCursor = pt;
+
+        if (g_app.hLastLoupeWnd && g_app.hLastLoupeWnd != hWnd && IsWindow(g_app.hLastLoupeWnd)) {
+            HWND hPrev = g_app.hLastLoupeWnd;
+            g_app.hLastLoupeWnd = hWnd;
+            InvalidateRect(hPrev, nullptr, FALSE);
+            UpdateWindow(hPrev);
+        }
+        else {
+            g_app.hLastLoupeWnd = hWnd;
+        }
 
         if (g_app.mode == CaptureMode::Window) {
             if (UpdateHoveredWindowAt(pt)) {
@@ -221,8 +461,15 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             g_app.ptCurrent = pt;
             int dx = std::abs(g_app.ptCurrent.x - g_app.ptOrigin.x);
             int dy = std::abs(g_app.ptCurrent.y - g_app.ptOrigin.y);
+            if (dx > kCancelDeadzonePx || dy > kCancelDeadzonePx) {
+                g_app.hasLeftDeadzone = true;
+            }
             g_app.dragCancelArm = (dx <= kCancelDeadzonePx && dy <= kCancelDeadzonePx);
             InvalidateAllOverlays();
+        }
+        else if (g_app.showLoupe) {
+            InvalidateRect(hWnd, nullptr, FALSE);
+            UpdateWindow(hWnd);
         }
         return 0;
     }
@@ -345,6 +592,13 @@ void RegisterOverlayClass(HINSTANCE hInst) {
 void BeginCaptureSession() {
     if (g_app.isCapturing) return;
 
+    wchar_t titleBuf[256] = {};
+    HWND hFg = GetForegroundWindow();
+    if (hFg) {
+        GetWindowTextW(hFg, titleBuf, 256);
+    }
+    g_app.activeWindowTitle = titleBuf;
+
     SnapshotVisibleWindows();
     if (!CaptureAndPrepareBuffers()) return;
 
@@ -386,7 +640,16 @@ void BeginCaptureSession() {
         SetWindowLongPtrW(mon.hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&g_app.overlays[i]));
         
     }
-    CreateAndShowToolbar();
+    
+
+    GetCursorPos(&g_app.ptCursor);
+    if (!g_hLoupeFont) {
+        int dpi = GetDeviceCaps(hScreenDC, LOGPIXELSX);
+        int fontH = -MulDiv(8, dpi > 0 ? dpi : 96, 72);
+        g_hLoupeFont = CreateFontW(fontH, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+    }
 
     ReleaseDC(nullptr, hScreenDC);
 
@@ -404,11 +667,18 @@ void BeginCaptureSession() {
         ShowWindow(mon.hWnd, SW_SHOWNA);
         UpdateWindow(mon.hWnd);
     }
+
+    CreateAndShowToolbar();
 }
 
 void EndCaptureSession() {
     if (GetCapture()) {
         ReleaseCapture();
+    }
+
+    if (g_hLoupeFont) {
+        DeleteObject(g_hLoupeFont);
+        g_hLoupeFont = nullptr;
     }
 
     DestroyToolbar();
@@ -434,10 +704,14 @@ void EndCaptureSession() {
     FreeDibSurface(g_app.pristine);
     FreeDibSurface(g_app.dimmed);
 
+
+    g_app.hLastLoupeWnd = nullptr;
     g_app.isCapturing = false;
     g_app.isDragging = false;
     g_app.dragCancelArm = false;
     g_app.hasHoveredWin = false;
+    g_app.isDraggingPill = false;
+    g_app.hasLeftDeadzone = false;
 
     SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
 }

@@ -6,3 +6,4 @@ void BeginCaptureSession();
 void EndCaptureSession();
 void SetCaptureMode(CaptureMode newMode);
 void CaptureFullVirtualScreen();
+void RefreshOverlayVisuals();

@@ -2,6 +2,9 @@
 #include "overlay.h"
 #include "toolbar.h"
 #include "toast.h"
+#include "config.h"
+#include "settings.h"
+#include "timer.h"
 #include <wchar.h>
 #include <objbase.h>
 
@@ -24,8 +27,13 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
         const auto* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
 
         if ((kb->flags & LLKHF_INJECTED) == 0) {
-            if (g_app.isCapturing && kb->vkCode == VK_ESCAPE) {
+            if ((g_app.isCapturing || IsDelayedCaptureActive()) && kb->vkCode == VK_ESCAPE) {
                 if (g_app.hMsgWnd) PostMessageW(g_app.hMsgWnd, WM_APP_CANCEL_CAPTURE, 0, 0);
+                return 1;
+            }
+
+            if (g_app.isCapturing && kb->vkCode == VK_SPACE) {
+                if (g_app.hMsgWnd) PostMessageW(g_app.hMsgWnd, WM_APP_TOGGLE_LOUPE, 0, 0);
                 return 1;
             }
 
@@ -53,15 +61,30 @@ static LRESULT CALLBACK MsgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         return 0;
 
     case WM_APP_CANCEL_CAPTURE:
+        CancelDelayedCapture();
         if (g_app.isCapturing) EndCaptureSession();
         return 0;
 
     case WM_APP_SHOW_SETTINGS:
-        Beep(520, 40);
+        ShowSettingsWindow();
         return 0;
 
     case WM_APP_LAUNCH_EDITOR:
         LaunchEditorForLatestCapture();
+        return 0;
+
+    case WM_APP_TIMER_TICK:
+        HandleDelayedCaptureTick();
+        return 0;
+
+    case WM_APP_TOGGLE_LOUPE:
+        g_app.showLoupe = !g_app.showLoupe;
+        for (const auto& mon : g_app.overlays) {
+            if (mon.hWnd) {
+                InvalidateRect(mon.hWnd, nullptr, FALSE);
+                UpdateWindow(mon.hWnd);
+            }
+        }
         return 0;
 
     case WM_CLOSE:
@@ -111,6 +134,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
 
     RegisterOverlayClass(hInst);
     RegisterToolbarClass(hInst);
+    RegisterSettingsClass(hInst);
 
     g_app.hMsgWnd = CreateWindowExW(0, kMsgWndClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hInst, nullptr);
     if (!g_app.hMsgWnd) {
@@ -118,6 +142,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
         return 1;
     }
     InitToastSubsystem();
+    LoadConfig();
 
     g_app.hKeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInst, 0);
     if (!g_app.hKeyHook) {
@@ -132,6 +157,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
         DispatchMessageW(&msg);
     }
 
+    CancelDelayedCapture();
     ShutdownToastSubsystem();
     UnhookWindowsHookEx(g_app.hKeyHook);
     EndCaptureSession();

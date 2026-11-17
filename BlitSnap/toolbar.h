@@ -6,3 +6,4 @@ void CreateAndShowToolbar();
 void DestroyToolbar();
 void SetToolbarVisible(bool visible);
 void RepaintToolbar();
+bool GetPillAnchorRect(int anchorIndex, RECT& outRect);

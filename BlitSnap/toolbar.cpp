@@ -1,5 +1,6 @@
 #include "toolbar.h"
 #include "overlay.h"
+#include "timer.h"
 #include <windowsx.h>
 #include <cmath>
 
@@ -18,8 +19,10 @@ enum PillButton {
     BTN_REGION = 1,
     BTN_WINDOW = 2,
     BTN_FULLSCREEN = 3,
-    BTN_CLOSE = 4,
-    BTN_COUNT = 5
+    BTN_DELAY_3 = 4,
+    BTN_DELAY_5 = 5,
+    BTN_CLOSE = 6,
+    BTN_COUNT = 7
 };
 
 static HWND       g_hToolbar = nullptr;
@@ -53,30 +56,31 @@ static void GetButtonRects(int w, int h, UINT dpi, RECT outRects[BTN_COUNT]) {
     int gripW = ScalePx(16, dpi);
     int btnW = ScalePx(36, dpi);
     int gap = ScalePx(2, dpi);
+    int sepGap = ScalePx(6, dpi);
     int btnH = h - pad * 2;
 
     int x = pad;
     outRects[BTN_GRIP] = { x, pad, x + gripW, pad + btnH }; x += gripW + gap;
     outRects[BTN_REGION] = { x, pad, x + btnW,  pad + btnH }; x += btnW + gap;
     outRects[BTN_WINDOW] = { x, pad, x + btnW,  pad + btnH }; x += btnW + gap;
-    outRects[BTN_FULLSCREEN] = { x, pad, x + btnW,  pad + btnH }; x += btnW + gap + ScalePx(4, dpi);
+    outRects[BTN_FULLSCREEN] = { x, pad, x + btnW,  pad + btnH }; x += btnW + sepGap;
+    outRects[BTN_DELAY_3] = { x, pad, x + btnW,  pad + btnH }; x += btnW + gap;
+    outRects[BTN_DELAY_5] = { x, pad, x + btnW,  pad + btnH }; x += btnW + sepGap;
     outRects[BTN_CLOSE] = { x, pad, x + btnW,  pad + btnH };
 }
 
-static void PositionToolbarAtAnchor() {
-    if (!g_hToolbar) return;
-
+bool GetPillAnchorRect(int anchorIndex, RECT& outRect) {
     RECT rcMon = {};
     UINT dpi = GetPrimaryMonitorDpi(rcMon);
 
-    int pillW = ScalePx(180, dpi);
+    int pillW = ScalePx(256, dpi);
     int pillH = ScalePx(40, dpi);
     int margin = ScalePx(14, dpi);
 
     int x = rcMon.left + (rcMon.right - rcMon.left - pillW) / 2;
     int y = rcMon.top + margin;
 
-    switch (g_anchor) {
+    switch (static_cast<PillAnchor>(anchorIndex)) {
     case PillAnchor::TopCenter:
         x = rcMon.left + (rcMon.right - rcMon.left - pillW) / 2;
         y = rcMon.top + margin;
@@ -93,9 +97,21 @@ static void PositionToolbarAtAnchor() {
         x = rcMon.right - pillW - margin;
         y = rcMon.bottom - pillH - margin;
         break;
+    default:
+        return false;
     }
 
-    SetWindowPos(g_hToolbar, HWND_TOPMOST, x, y, pillW, pillH, SWP_NOACTIVATE);
+    outRect = { x, y, x + pillW, y + pillH };
+    return true;
+}
+
+static void PositionToolbarAtAnchor() {
+    if (!g_hToolbar) return;
+    RECT rc = {};
+    if (GetPillAnchorRect(static_cast<int>(g_anchor), rc)) {
+        SetWindowPos(g_hToolbar, HWND_TOPMOST, rc.left, rc.top,
+            rc.right - rc.left, rc.bottom - rc.top, SWP_NOACTIVATE);
+    }
 }
 
 static PillAnchor NearestAnchorToPoint(POINT ptScreen) {
@@ -179,6 +195,22 @@ static void DrawGlyph(HDC hdc, int btn, const RECT& rc, UINT dpi) {
         MoveToEx(hdc, R - arm, T, nullptr); LineTo(hdc, R, T); LineTo(hdc, R, T + arm + 1);
         MoveToEx(hdc, L, B - arm, nullptr); LineTo(hdc, L, B); LineTo(hdc, L + arm + 1, B);
         MoveToEx(hdc, R - arm, B, nullptr); LineTo(hdc, R, B); LineTo(hdc, R, B - arm - 1);
+        break;
+    }
+    case BTN_DELAY_3:
+    case BTN_DELAY_5: {
+        const wchar_t* label = (btn == BTN_DELAY_3) ? L"3s" : L"5s";
+        int fontH = ScalePx(13, dpi);
+        HFONT hFont = CreateFontW(-fontH, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        HGDIOBJ oldFont = SelectObject(hdc, hFont);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, fg);
+        RECT rcTxt = rc;
+        DrawTextW(hdc, label, -1, &rcTxt, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(hdc, oldFont);
+        DeleteObject(hFont);
         break;
     }
     case BTN_CLOSE: {
@@ -301,6 +333,12 @@ static LRESULT CALLBACK ToolbarWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 ptScreen.x - g_pillDragStart.x,
                 ptScreen.y - g_pillDragStart.y,
                 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+
+            int preview = static_cast<int>(NearestAnchorToPoint(ptScreen));
+            if (preview != g_app.pillSnapPreview) {
+                g_app.pillSnapPreview = preview;
+                RefreshOverlayVisuals();
+            }
             return 0;
         }
 
@@ -338,11 +376,17 @@ static LRESULT CALLBACK ToolbarWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         if (hit == BTN_GRIP) {
             g_draggingPill = true;
             g_pillDragStart = pt;
+            g_app.isDraggingPill = true;
+            g_app.pillSnapPreview = static_cast<int>(g_anchor);
+            RefreshOverlayVisuals();
         }
         else {
             g_pressedBtn = hit;
             InvalidateRect(hWnd, nullptr, FALSE);
         }
+
+       
+
         return 0;
     }
 
@@ -353,10 +397,14 @@ static LRESULT CALLBACK ToolbarWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 
         if (g_draggingPill) {
             g_draggingPill = false;
+            g_app.isDraggingPill = false;
+            g_app.pillSnapPreview = -1;
+
             POINT ptScreen = {};
             GetCursorPos(&ptScreen);
             g_anchor = NearestAnchorToPoint(ptScreen);
             PositionToolbarAtAnchor();
+            RefreshOverlayVisuals();
             return 0;
         }
 
@@ -380,12 +428,21 @@ static LRESULT CALLBACK ToolbarWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         case BTN_FULLSCREEN:
             CaptureFullVirtualScreen();
             break;
+        case BTN_DELAY_3:
+            EndCaptureSession();
+            StartDelayedCapture(3);
+            break;
+        case BTN_DELAY_5:
+            EndCaptureSession();
+            StartDelayedCapture(5);
+            break;
         case BTN_CLOSE:
             EndCaptureSession();
             break;
         }
         return 0;
     }
+    
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }

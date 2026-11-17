@@ -140,17 +140,24 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="capture.cpp" />
+    <ClCompile Include="config.cpp" />
     <ClCompile Include="export.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="overlay.cpp" />
+    <ClCompile Include="settings.cpp" />
+    <ClCompile Include="timer.cpp" />
     <ClCompile Include="toast.cpp" />
     <ClCompile Include="toolbar.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="blitsnap.h" />
     <ClInclude Include="capture.h" />
+    <ClInclude Include="config.h" />
     <ClInclude Include="export.h" />
     <ClInclude Include="overlay.h" />
+    <ClInclude Include="settings.h" />
+    <ClInclude Include="theme.h" />
+    <ClInclude Include="timer.h" />
     <ClInclude Include="toast.h" />
     <ClInclude Include="toolbar.h" />
   </ItemGroup>

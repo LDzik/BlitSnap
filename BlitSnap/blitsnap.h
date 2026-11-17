@@ -6,11 +6,14 @@
 #include <windows.h>
 #include <stdint.h>
 #include <vector>
+#include <string>
 
 constexpr UINT WM_APP_TRIGGER_CAPTURE = WM_APP + 1;
 constexpr UINT WM_APP_CANCEL_CAPTURE = WM_APP + 2;
 constexpr UINT WM_APP_SHOW_SETTINGS = WM_APP + 3;
 constexpr UINT WM_APP_LAUNCH_EDITOR = WM_APP + 4;
+constexpr UINT WM_APP_TIMER_TICK = WM_APP + 5;
+constexpr UINT WM_APP_TOGGLE_LOUPE = WM_APP + 6;
 
 constexpr wchar_t kMutexName[] = L"BlitSnap_SingleInstance_Mutex";
 constexpr wchar_t kMsgWndClass[] = L"BlitSnap_MessageOnly_Class";
@@ -48,6 +51,8 @@ struct AppState {
     HWND                        hMsgWnd = nullptr;
     HHOOK                       hKeyHook = nullptr;
 
+    std::wstring                activeWindowTitle;
+
     CaptureMode                 mode = CaptureMode::Region;
     DibSurface                  pristine = {};
     DibSurface                  dimmed = {};
@@ -59,9 +64,15 @@ struct AppState {
     bool                        dragCancelArm = false;
     POINT                       ptOrigin = {};
     POINT                       ptCurrent = {};
+    bool                        hasLeftDeadzone = false;
+    bool                        isDraggingPill = false;
+    int                         pillSnapPreview = -1;
+    HWND                        hLastLoupeWnd = nullptr;
 
     bool                        hasHoveredWin = false;
     RECT                        rcHoveredWin = {};
+    bool                        showLoupe = true;
+    POINT                       ptCursor = {};
 };
 
 extern AppState g_app;
