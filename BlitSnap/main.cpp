@@ -2,6 +2,7 @@
 #include "overlay.h"
 #include "toolbar.h"
 #include <wchar.h>
+#include <objbase.h>
 
 #pragma comment(linker, "/SUBSYSTEM:WINDOWS")
 #pragma comment(lib, "user32.lib")
@@ -72,6 +73,7 @@ static LRESULT CALLBACK MsgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     g_app.hInst = hInst;
 
     bool killRequested = (pCmdLine && wcsstr(pCmdLine, L"--kill") != nullptr);
@@ -123,5 +125,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
     UnhookWindowsHookEx(g_app.hKeyHook);
     EndCaptureSession();
     if (hMutex) CloseHandle(hMutex);
+    CoUninitialize();
     return 0;
 }

@@ -140,6 +140,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="capture.cpp" />
+    <ClCompile Include="export.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="overlay.cpp" />
     <ClCompile Include="toolbar.cpp" />
@@ -147,6 +148,7 @@
   <ItemGroup>
     <ClInclude Include="blitsnap.h" />
     <ClInclude Include="capture.h" />
+    <ClInclude Include="export.h" />
     <ClInclude Include="overlay.h" />
     <ClInclude Include="toolbar.h" />
   </ItemGroup>

@@ -58,11 +58,18 @@ static void DimPixelsSSE2(const uint32_t* src, uint32_t* dst, size_t pixelCount)
 
     for (; i + 4 <= pixelCount; i += 4) {
         __m128i px = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
-        __m128i dimmed = _mm_avg_epu8(px, zero);
+        __m128i half = _mm_avg_epu8(px, zero);
+        __m128i quarter = _mm_avg_epu8(half, zero);
+        __m128i eighth = _mm_avg_epu8(quarter, zero);
+        __m128i dimmed = _mm_adds_epu8(half, eighth);
         _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), dimmed);
     }
     for (; i < pixelCount; ++i) {
-        dst[i] = ((src[i] >> 1) & 0x7F7F7F7Fu) | 0xFF000000u;
+        uint32_t c = src[i];
+        uint32_t r = (((c >> 16) & 0xFFu) * 160u) >> 8;
+        uint32_t g = (((c >> 8) & 0xFFu) * 160u) >> 8;
+        uint32_t b = ((c & 0xFFu) * 160u) >> 8;
+        dst[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
     }
 }
 
