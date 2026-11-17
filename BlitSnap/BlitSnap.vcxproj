@@ -143,6 +143,7 @@
     <ClCompile Include="export.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="overlay.cpp" />
+    <ClCompile Include="toast.cpp" />
     <ClCompile Include="toolbar.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -150,6 +151,7 @@
     <ClInclude Include="capture.h" />
     <ClInclude Include="export.h" />
     <ClInclude Include="overlay.h" />
+    <ClInclude Include="toast.h" />
     <ClInclude Include="toolbar.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

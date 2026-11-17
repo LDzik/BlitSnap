@@ -10,6 +10,7 @@
 constexpr UINT WM_APP_TRIGGER_CAPTURE = WM_APP + 1;
 constexpr UINT WM_APP_CANCEL_CAPTURE = WM_APP + 2;
 constexpr UINT WM_APP_SHOW_SETTINGS = WM_APP + 3;
+constexpr UINT WM_APP_LAUNCH_EDITOR = WM_APP + 4;
 
 constexpr wchar_t kMutexName[] = L"BlitSnap_SingleInstance_Mutex";
 constexpr wchar_t kMsgWndClass[] = L"BlitSnap_MessageOnly_Class";

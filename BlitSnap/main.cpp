@@ -1,6 +1,7 @@
 #include "blitsnap.h"
 #include "overlay.h"
 #include "toolbar.h"
+#include "toast.h"
 #include <wchar.h>
 #include <objbase.h>
 
@@ -59,6 +60,10 @@ static LRESULT CALLBACK MsgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         Beep(520, 40);
         return 0;
 
+    case WM_APP_LAUNCH_EDITOR:
+        LaunchEditorForLatestCapture();
+        return 0;
+
     case WM_CLOSE:
         if (g_app.isCapturing) EndCaptureSession();
         DestroyWindow(hWnd);
@@ -80,9 +85,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
 
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, kMutexName);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND hExisting = FindWindowW(kMsgWndClass, nullptr);
-        if (hExisting) {
-            PostMessageW(hExisting, killRequested ? WM_CLOSE : WM_APP_SHOW_SETTINGS, 0, 0);
+        bool isToastActivated = (pCmdLine && wcsstr(pCmdLine, L"-ToastActivated") != nullptr);
+
+        if (!isToastActivated || killRequested) {
+            HWND hExisting = FindWindowW(kMsgWndClass, nullptr);
+            if (hExisting) {
+                PostMessageW(hExisting, killRequested ? WM_CLOSE : WM_APP_SHOW_SETTINGS, 0, 0);
+            }
         }
         if (hMutex) CloseHandle(hMutex);
         return 0;
@@ -108,6 +117,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
         if (hMutex) CloseHandle(hMutex);
         return 1;
     }
+    InitToastSubsystem();
 
     g_app.hKeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInst, 0);
     if (!g_app.hKeyHook) {
@@ -122,6 +132,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
         DispatchMessageW(&msg);
     }
 
+    ShutdownToastSubsystem();
     UnhookWindowsHookEx(g_app.hKeyHook);
     EndCaptureSession();
     if (hMutex) CloseHandle(hMutex);

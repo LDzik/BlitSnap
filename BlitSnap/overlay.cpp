@@ -2,6 +2,7 @@
 #include "capture.h"
 #include "toolbar.h"
 #include "export.h"
+#include "toast.h"
 #include <windowsx.h>
 #include <wchar.h>
 #include <algorithm>
@@ -117,7 +118,12 @@ static void CommitSelection(const RECT& rcFinal) {
         ms, ok ? 1 : 0);
     OutputDebugStringW(buf);
 
-    if (ok) Beep(1046, 35);
+    if (ok) {
+        wchar_t pngPath[MAX_PATH] = {};
+        if (GetLatestCapturePath(pngPath, MAX_PATH)) {
+            ShowCaptureToast(pngPath);
+        }
+    }
     EndCaptureSession();
 }
 

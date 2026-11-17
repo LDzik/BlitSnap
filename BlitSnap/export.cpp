@@ -8,6 +8,18 @@
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "ole32.lib")
 
+bool GetLatestCapturePath(wchar_t* outPath, size_t cch) {
+    wchar_t tempRoot[MAX_PATH] = {};
+    DWORD len = GetTempPathW(MAX_PATH, tempRoot);
+    if (len == 0 || len >= MAX_PATH - 32) return false;
+
+    wchar_t folderPath[MAX_PATH] = {};
+    swprintf_s(folderPath, L"%sBlitSnap", tempRoot);
+    CreateDirectoryW(folderPath, nullptr);
+
+    return swprintf_s(outPath, cch, L"%s\\latest.png", folderPath) > 0;
+}
+
 static bool SaveBytesToTempPng(const void* data, DWORD byteCount) {
     wchar_t tempRoot[MAX_PATH] = {};
     DWORD len = GetTempPathW(MAX_PATH, tempRoot);
