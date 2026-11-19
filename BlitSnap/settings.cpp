@@ -452,7 +452,7 @@ void ShowSettingsWindow() {
         x, y, w, h,
         nullptr, nullptr, g_app.hInst, nullptr
     );
-
+                    
     ShowWindow(g_hSettingsWnd, SW_SHOW);
     UpdateWindow(g_hSettingsWnd);
 }

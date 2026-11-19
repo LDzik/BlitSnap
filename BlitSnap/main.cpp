@@ -37,6 +37,16 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                 return 1;
             }
 
+            if (g_app.isCapturing && kb->vkCode == VK_TAB) {
+                bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                if (!altDown) {
+                    if (!g_app.isDragging && !g_app.isDraggingPill && g_app.hMsgWnd) {
+                        PostMessageW(g_app.hMsgWnd, WM_APP_TOGGLE_MODE, 0, 0);
+                    }
+                    return 1;
+                }
+            }
+
             if (kb->vkCode == 'S') {
                 bool winDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000);
                 bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -84,6 +94,12 @@ static LRESULT CALLBACK MsgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 InvalidateRect(mon.hWnd, nullptr, FALSE);
                 UpdateWindow(mon.hWnd);
             }
+        }
+        return 0;
+
+    case WM_APP_TOGGLE_MODE:
+        if (g_app.isCapturing && !g_app.isDragging && !g_app.isDraggingPill) {
+            SetCaptureMode(g_app.mode == CaptureMode::Region ? CaptureMode::Window : CaptureMode::Region);
         }
         return 0;
 

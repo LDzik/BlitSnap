@@ -14,6 +14,7 @@ constexpr UINT WM_APP_SHOW_SETTINGS = WM_APP + 3;
 constexpr UINT WM_APP_LAUNCH_EDITOR = WM_APP + 4;
 constexpr UINT WM_APP_TIMER_TICK = WM_APP + 5;
 constexpr UINT WM_APP_TOGGLE_LOUPE = WM_APP + 6;
+constexpr UINT WM_APP_TOGGLE_MODE = WM_APP + 7;
 
 constexpr wchar_t kMutexName[] = L"BlitSnap_SingleInstance_Mutex";
 constexpr wchar_t kMsgWndClass[] = L"BlitSnap_MessageOnly_Class";
