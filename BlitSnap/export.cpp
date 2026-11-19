@@ -242,38 +242,21 @@ static HGLOBAL EncodePngAndSaveTemp(const uint32_t* topDownPixels, int w, int h)
     return hExactPngGlobal;
 }
 
-bool ExportCaptureToClipboardAndTemp(const RECT& rcVirtualScreen) {
-    if (!g_app.pristine.pixels || !g_app.hMsgWnd) return false;
+namespace {
 
-    RECT rcBounds = {
-        g_app.pristine.vx,
-        g_app.pristine.vy,
-        g_app.pristine.vx + g_app.pristine.width,
-        g_app.pristine.vy + g_app.pristine.height
-    };
-    RECT rcCrop = {};
-    if (!IntersectRect(&rcCrop, &rcVirtualScreen, &rcBounds)) return false;
-
-    int cropW = rcCrop.right - rcCrop.left;
-    int cropH = rcCrop.bottom - rcCrop.top;
-    if (cropW <= 0 || cropH <= 0) return false;
-
-    int offsetX = rcCrop.left - g_app.pristine.vx;
-    int offsetY = rcCrop.top - g_app.pristine.vy;
-    int srcStride = g_app.pristine.width;
-
-    std::vector<uint32_t> cropPixels(static_cast<SIZE_T>(cropW) * static_cast<SIZE_T>(cropH));
-    for (int y = 0; y < cropH; ++y) {
-        const uint32_t* srcRow = g_app.pristine.pixels + static_cast<SIZE_T>(offsetY + y) * srcStride + offsetX;
-        uint32_t* dstRow = cropPixels.data() + static_cast<SIZE_T>(y) * cropW;
-        for (int x = 0; x < cropW; ++x) {
-            dstRow[x] = srcRow[x] | 0xFF000000u;
-        }
+bool EncodeAndInjectClipboard(
+    const uint32_t* topDownPixels,
+    int cropW,
+    int cropH,
+    std::wstring* outPngPath)
+{
+    if (!topDownPixels || cropW <= 0 || cropH <= 0 || !g_app.hMsgWnd) {
+        return false;
     }
 
     g_lastPngPath.clear();
-    HGLOBAL hPngGlobal = EncodePngAndSaveTemp(cropPixels.data(), cropW, cropH);
-    HGLOBAL hDibGlobal = BuildBottomUpCfDib(cropPixels.data(), cropW, cropH);
+    HGLOBAL hPngGlobal = EncodePngAndSaveTemp(topDownPixels, cropW, cropH);
+    HGLOBAL hDibGlobal = BuildBottomUpCfDib(topDownPixels, cropW, cropH);
     HGLOBAL hDropGlobal = BuildDropFilesGlobal(g_lastPngPath);
     HGLOBAL hEffectGlobal = hDropGlobal ? BuildDropEffectGlobal(DROPEFFECT_COPY) : nullptr;
 
@@ -306,5 +289,64 @@ bool ExportCaptureToClipboardAndTemp(const RECT& rcVirtualScreen) {
     }
 
     CloseClipboard();
+
+    if (outPngPath) {
+        *outPngPath = g_lastPngPath;
+    }
     return true;
+}
+
+bool ExportSurfaceSubRect(
+    const DibSurface& surface,
+    RECT rcLocalCrop,
+    std::wstring* outPngPath)
+{
+    if (!surface.pixels || surface.width <= 0 || surface.height <= 0 || !g_app.hMsgWnd) {
+        return false;
+    }
+
+    RECT rcBounds{ 0, 0, surface.width, surface.height };
+    RECT rcClamped{};
+    if (!IntersectRect(&rcClamped, &rcLocalCrop, &rcBounds)) {
+        return false;
+    }
+
+    int cropW = rcClamped.right - rcClamped.left;
+    int cropH = rcClamped.bottom - rcClamped.top;
+    if (cropW <= 0 || cropH <= 0) {
+        return false;
+    }
+
+    std::vector<uint32_t> cropPixels(static_cast<size_t>(cropW) * static_cast<size_t>(cropH));
+    for (int y = 0; y < cropH; ++y) {
+        const uint32_t* srcRow = surface.pixels + static_cast<size_t>(rcClamped.top + y) * surface.width + rcClamped.left;
+        uint32_t* dstRow = cropPixels.data() + static_cast<size_t>(y) * cropW;
+        for (int x = 0; x < cropW; ++x) {
+            dstRow[x] = srcRow[x] | 0xFF000000u; // Enforce opaque alpha for PNG/DIB
+        }
+    }
+
+    return EncodeAndInjectClipboard(cropPixels.data(), cropW, cropH, outPngPath);
+}
+
+} // namespace
+
+bool ExportCaptureToClipboardAndTemp(RECT rcVirtualScreen, std::wstring* outPngPath) {
+    RECT rcLocal{
+        rcVirtualScreen.left - g_app.vx,
+        rcVirtualScreen.top - g_app.vy,
+        rcVirtualScreen.right - g_app.vx,
+        rcVirtualScreen.bottom - g_app.vy
+    };
+    return ExportSurfaceSubRect(g_app.pristine, rcLocal, outPngPath);
+}
+
+bool ExportLayerToClipboardAndTemp(const WindowLayer& layer, std::wstring* outPngPath) {
+    RECT rcLocal{
+        layer.rcExtended.left - layer.rcWindow.left,
+        layer.rcExtended.top - layer.rcWindow.top,
+        layer.rcExtended.right - layer.rcWindow.left,
+        layer.rcExtended.bottom - layer.rcWindow.top
+    };
+    return ExportSurfaceSubRect(layer.surface, rcLocal, outPngPath);
 }

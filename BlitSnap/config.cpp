@@ -3,6 +3,7 @@
 #include <wchar.h>
 #include <random>
 #include <algorithm>
+#include <cwctype>
 
 AppConfig g_config = {};
 
@@ -27,18 +28,84 @@ static std::wstring GetDefaultScreenshotsFolder() {
     return L"C:\\BlitSnap";
 }
 
+static std::vector<std::wstring> ParseProcessList(const std::wstring& raw) {
+    std::vector<std::wstring> out;
+    size_t pos = 0;
+    while (pos <= raw.size()) {
+        size_t sep = raw.find_first_of(L",;", pos);
+        std::wstring token = (sep == std::wstring::npos)
+            ? raw.substr(pos)
+            : raw.substr(pos, sep - pos);
+
+        size_t first = token.find_first_not_of(L" \t\r\n");
+        if (first != std::wstring::npos) {
+            size_t last = token.find_last_not_of(L" \t\r\n");
+            token = token.substr(first, last - first + 1);
+
+            bool duplicate = false;
+            for (const auto& existing : out) {
+                if (_wcsicmp(existing.c_str(), token.c_str()) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!token.empty() && !duplicate) {
+                out.push_back(std::move(token));
+            }
+        }
+
+        if (sep == std::wstring::npos) break;
+        pos = sep + 1;
+    }
+    return out;
+}
+
+static std::wstring JoinProcessList(const std::vector<std::wstring>& list) {
+    std::wstring joined;
+    for (size_t i = 0; i < list.size(); ++i) {
+        if (i > 0) joined += L",";
+        joined += list[i];
+    }
+    return joined;
+}
+
+static std::wstring ReadIniStringDynamic(const wchar_t* section, const wchar_t* key, const wchar_t* defVal, const std::wstring& iniPath) {
+    DWORD cap = 512;
+    for (;;) {
+        std::wstring buf(cap, L'\0');
+        DWORD copied = GetPrivateProfileStringW(section, key, defVal, buf.data(), cap, iniPath.c_str());
+        if (copied < cap - 2) {
+            buf.resize(copied);
+            return buf;
+        }
+        cap *= 2;
+        if (cap > 65536) {
+            buf.resize(copied);
+            return buf;
+        }
+    }
+}
+
 void LoadConfig() {
     g_config.saveFolder = GetDefaultScreenshotsFolder();
     g_config.filePattern = L"BlitSnap_{date}_{time}_{app}";
     g_config.editorPath.clear();
     g_config.autoSave = false;
     g_config.showToast = true;
+    g_config.layerMode = true;
+    g_config.showTaskbar = true;
+    g_config.hiddenProcesses.clear();
 
     std::wstring ini = GetConfigFilePath();
     if (ini.empty()) return;
 
     g_config.autoSave = GetPrivateProfileIntW(L"General", L"AutoSave", 0, ini.c_str()) != 0;
     g_config.showToast = GetPrivateProfileIntW(L"General", L"ShowToast", 1, ini.c_str()) != 0;
+
+    g_config.layerMode = GetPrivateProfileIntW(L"General", L"LayerMode", 1, ini.c_str()) != 0;
+    g_config.showTaskbar = GetPrivateProfileIntW(L"General", L"ShowTaskbar", 1, ini.c_str()) != 0;
+    std::wstring rawHidden = ReadIniStringDynamic(L"General", L"HiddenProcesses", L"", ini);
+    g_config.hiddenProcesses = ParseProcessList(rawHidden);
 
     wchar_t buf[1024] = {};
     GetPrivateProfileStringW(L"General", L"SaveFolder", g_config.saveFolder.c_str(), buf, 1024, ini.c_str());
@@ -60,6 +127,39 @@ void SaveConfig() {
     WritePrivateProfileStringW(L"General", L"SaveFolder", g_config.saveFolder.c_str(), ini.c_str());
     WritePrivateProfileStringW(L"General", L"FilePattern", g_config.filePattern.c_str(), ini.c_str());
     WritePrivateProfileStringW(L"General", L"EditorPath", g_config.editorPath.c_str(), ini.c_str());
+
+    WritePrivateProfileStringW(L"General", L"LayerMode", g_config.layerMode ? L"1" : L"0", ini.c_str());
+    WritePrivateProfileStringW(L"General", L"ShowTaskbar", g_config.showTaskbar ? L"1" : L"0", ini.c_str());
+    std::wstring joinedHidden = JoinProcessList(g_config.hiddenProcesses);
+    WritePrivateProfileStringW(L"General", L"HiddenProcesses", joinedHidden.c_str(), ini.c_str());
+}
+
+
+bool IsProcessHiddenInConfig(const std::wstring& exeName) {
+    if (exeName.empty()) return false;
+    for (const auto& entry : g_config.hiddenProcesses) {
+        if (_wcsicmp(entry.c_str(), exeName.c_str()) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void SetProcessHiddenInConfig(const std::wstring& exeName, bool hidden) {
+    if (exeName.empty()) return;
+
+    auto it = std::remove_if(
+        g_config.hiddenProcesses.begin(),
+        g_config.hiddenProcesses.end(),
+        [&](const std::wstring& item) {
+            return _wcsicmp(item.c_str(), exeName.c_str()) == 0;
+        });
+    g_config.hiddenProcesses.erase(it, g_config.hiddenProcesses.end());
+
+    if (hidden) {
+        g_config.hiddenProcesses.push_back(exeName);
+    }
+    SaveConfig();
 }
 
 std::wstring SanitizeFilenameComponent(const std::wstring& raw) {

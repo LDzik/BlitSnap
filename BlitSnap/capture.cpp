@@ -1,4 +1,6 @@
 #include "capture.h"
+#include "config.h"
+#include "layers.h"
 #include <dwmapi.h>
 #include <emmintrin.h>
 
@@ -20,43 +22,49 @@ void FreeDibSurface(DibSurface& surf) {
     surf.height = 0;
 }
 
-static bool CreateDibSurface(HDC hRefDC, int vx, int vy, int w, int h, DibSurface& outSurf) {
-    FreeDibSurface(outSurf);
-    if (w <= 0 || h <= 0) return false;
+bool CreateDibSurface(DibSurface& surf, int width, int height) {
+    FreeDibSurface(surf);
+    if (width <= 0 || height <= 0) return false;
+
+    HDC hScreenDC = GetDC(nullptr);
+    if (!hScreenDC) return false;
 
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h;
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* pBits = nullptr;
-    HDC hMemDC = CreateCompatibleDC(hRefDC);
-    HBITMAP hDib = CreateDIBSection(hRefDC, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+    HDC hMemDC = CreateCompatibleDC(hScreenDC);
+    HBITMAP hDib = CreateDIBSection(hScreenDC, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+    ReleaseDC(nullptr, hScreenDC);
+
     if (!hMemDC || !hDib || !pBits) {
         if (hDib) DeleteObject(hDib);
         if (hMemDC) DeleteDC(hMemDC);
         return false;
     }
 
-    outSurf.hOldBmp = SelectObject(hMemDC, hDib);
-    outSurf.hDC = hMemDC;
-    outSurf.hBitmap = hDib;
-    outSurf.pixels = static_cast<uint32_t*>(pBits);
-    outSurf.vx = vx;
-    outSurf.vy = vy;
-    outSurf.width = w;
-    outSurf.height = h;
+    surf.hOldBmp = SelectObject(hMemDC, hDib);
+    surf.hDC = hMemDC;
+    surf.hBitmap = hDib;
+    surf.pixels = static_cast<uint32_t*>(pBits);
+    surf.width = width;
+    surf.height = height;
     return true;
 }
 
-static void DimPixelsSSE2(const uint32_t* src, uint32_t* dst, size_t pixelCount) {
+void DimPixelsSSE2(const uint32_t* src, uint32_t* dst, int pixelCount) {
+    if (!src || !dst || pixelCount <= 0) return;
+
     const __m128i zero = _mm_setzero_si128();
+    const size_t total = static_cast<size_t>(pixelCount);
     size_t i = 0;
 
-    for (; i + 4 <= pixelCount; i += 4) {
+    for (; i + 4 <= total; i += 4) {
         __m128i px = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
         __m128i half = _mm_avg_epu8(px, zero);
         __m128i quarter = _mm_avg_epu8(half, zero);
@@ -64,7 +72,7 @@ static void DimPixelsSSE2(const uint32_t* src, uint32_t* dst, size_t pixelCount)
         __m128i dimmed = _mm_adds_epu8(half, eighth);
         _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), dimmed);
     }
-    for (; i < pixelCount; ++i) {
+    for (; i < total; ++i) {
         uint32_t c = src[i];
         uint32_t r = (((c >> 16) & 0xFFu) * 160u) >> 8;
         uint32_t g = (((c >> 8) & 0xFFu) * 160u) >> 8;
@@ -74,20 +82,40 @@ static void DimPixelsSSE2(const uint32_t* src, uint32_t* dst, size_t pixelCount)
 }
 
 bool CaptureAndPrepareBuffers() {
-    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    g_app.vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    g_app.vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    g_app.vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    g_app.vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    if (g_app.vw <= 0 || g_app.vh <= 0) {
+        return false;
+    }
+
+    FreeDibSurface(g_app.pristine);
+    FreeDibSurface(g_app.dimmed);
+
+    if (!CreateDibSurface(g_app.pristine, g_app.vw, g_app.vh) ||
+        !CreateDibSurface(g_app.dimmed, g_app.vw, g_app.vh)) {
+        FreeDibSurface(g_app.pristine);
+        FreeDibSurface(g_app.dimmed);
+        return false;
+    }
+
+    if (g_config.layerMode) {
+        if (CaptureLayerStack()) {
+            RecompositeLayers();
+            return true;
+        }
+    }
 
     HDC hScreenDC = GetDC(nullptr);
-    if (!hScreenDC) return false;
-
-    bool ok = CreateDibSurface(hScreenDC, vx, vy, vw, vh, g_app.pristine) &&
-        CreateDibSurface(hScreenDC, vx, vy, vw, vh, g_app.dimmed);
-
-    if (ok) {
-        ok = BitBlt(g_app.pristine.hDC, 0, 0, vw, vh, hScreenDC, vx, vy, SRCCOPY | CAPTUREBLT) != FALSE;
+    if (!hScreenDC) {
+        FreeDibSurface(g_app.pristine);
+        FreeDibSurface(g_app.dimmed);
+        return false;
     }
+
+    bool ok = BitBlt(g_app.pristine.hDC, 0, 0, g_app.vw, g_app.vh, hScreenDC, g_app.vx, g_app.vy, SRCCOPY | CAPTUREBLT) != FALSE;
     ReleaseDC(nullptr, hScreenDC);
 
     if (!ok) {
@@ -96,7 +124,7 @@ bool CaptureAndPrepareBuffers() {
         return false;
     }
 
-    DimPixelsSSE2(g_app.pristine.pixels, g_app.dimmed.pixels, static_cast<size_t>(vw) * static_cast<size_t>(vh));
+    DimPixelsSSE2(g_app.pristine.pixels, g_app.dimmed.pixels, g_app.vw * g_app.vh);
     return true;
 }
 
@@ -130,6 +158,5 @@ static BOOL CALLBACK EnumWindowsSnapProc(HWND hWnd, LPARAM) {
 
 void SnapshotVisibleWindows() {
     g_app.windowRects.clear();
-    g_app.hasHoveredWin = false;
     EnumWindows(EnumWindowsSnapProc, 0);
 }

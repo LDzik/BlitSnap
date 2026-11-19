@@ -1,5 +1,6 @@
 #include "blitsnap.h"
 #include "overlay.h"
+#include "layers.h"
 #include "toolbar.h"
 #include "toast.h"
 #include "config.h"
@@ -47,6 +48,23 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                 }
             }
 
+            if (g_app.isCapturing) {
+                bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                bool winDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+                               (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+
+                if (kb->vkCode == 'H' && !ctrlDown && !altDown && !winDown) {
+                    if (g_app.hMsgWnd) PostMessageW(g_app.hMsgWnd, WM_APP_PEEL_HOVER_LAYER, 0, 0);
+                    return 1;
+                }
+
+                if (kb->vkCode == 'Z' && ctrlDown && !altDown && !winDown) {
+                    if (g_app.hMsgWnd) PostMessageW(g_app.hMsgWnd, WM_APP_UNPEEL_LAYER, 0, 0);
+                    return 1;
+                }
+            }
+
             if (kb->vkCode == 'S') {
                 bool winDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000);
                 bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -71,6 +89,10 @@ static LRESULT CALLBACK MsgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         return 0;
 
     case WM_APP_CANCEL_CAPTURE:
+        if (IsLayersPopupOpen()) {
+            CloseLayersPopup();
+            return 0;
+        }
         CancelDelayedCapture();
         if (g_app.isCapturing) EndCaptureSession();
         return 0;
@@ -100,6 +122,30 @@ static LRESULT CALLBACK MsgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     case WM_APP_TOGGLE_MODE:
         if (g_app.isCapturing && !g_app.isDragging && !g_app.isDraggingPill) {
             SetCaptureMode(g_app.mode == CaptureMode::Region ? CaptureMode::Window : CaptureMode::Region);
+        }
+        return 0;
+
+    case WM_APP_TOGGLE_LAYER_MODE:
+        ToggleCaptureLayerMode();
+        if (!g_config.layerMode && IsLayersPopupOpen()) {
+            CloseLayersPopup();
+        }
+        else {
+            RepaintLayersPopup();
+        }
+        return 0;
+
+    case WM_APP_PEEL_HOVER_LAYER:
+        if (PeelLayerGroupAtPoint(g_app.ptCursor)) {
+            RepaintToolbar();
+            RepaintLayersPopup();
+        }
+        return 0;
+
+    case WM_APP_UNPEEL_LAYER:
+        if (UnpeelLastLayerGroup()) {
+            RepaintToolbar();
+            RepaintLayersPopup();
         }
         return 0;
 

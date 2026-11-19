@@ -1,15 +1,18 @@
 #include "toolbar.h"
 #include "overlay.h"
 #include "timer.h"
+#include "config.h"
+#include "layers.h"
+#include "theme.h"
 #include <windowsx.h>
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <shellscalingapi.h>
 
 #pragma comment(lib, "shcore.lib")
 
 static HFONT g_hDelayFont = nullptr;
-
-constexpr wchar_t kToolbarWndClass[] = L"BlitSnap_Toolbar_Class";
 
 enum class PillAnchor {
     TopCenter = 0,
@@ -24,10 +27,12 @@ enum PillButton {
     BTN_REGION = 1,
     BTN_WINDOW = 2,
     BTN_FULLSCREEN = 3,
-    BTN_DELAY_3 = 4,
-    BTN_DELAY_5 = 5,
-    BTN_CLOSE = 6,
-    BTN_COUNT = 7
+    BTN_LAYER_MODE = 4,
+    BTN_LAYERS = 5,
+    BTN_DELAY_3 = 6,
+    BTN_DELAY_5 = 7,
+    BTN_CLOSE = 8,
+    BTN_COUNT = 9
 };
 
 static HWND       g_hToolbar = nullptr;
@@ -37,6 +42,28 @@ static int        g_pressedBtn = BTN_NONE;
 static bool       g_trackingLeave = false;
 static bool       g_draggingPill = false;
 static POINT      g_pillDragStart = {};
+
+// Layers popup state
+static HWND  g_hLayersPopup = nullptr;
+static HFONT g_hLayerTitleFont = nullptr;
+static HFONT g_hLayerSubFont = nullptr;
+static UINT  g_popupDpi = 96;
+static int   g_popupScrollIdx = 0;
+static int   g_popupHoverRow = -1;
+static bool  g_popupHoverLock = false;
+static bool  g_popupHoverReset = false;
+
+constexpr int kPopupMaxVisibleRows = 9;
+
+struct PopupLayout {
+    int width = 0;
+    int height = 0;
+    int headerH = 0;
+    int rowH = 0;
+    int padX = 0;
+    int visibleRows = 0;
+    RECT rcShowAll{};
+};
 
 static int ScalePx(int px, UINT dpi) {
     return MulDiv(px, static_cast<int>(dpi), 96);
@@ -57,12 +84,109 @@ static UINT GetPrimaryMonitorDpi(RECT& outWorkArea) {
     return dpiX;
 }
 
+static int CountHiddenLayers() {
+    int hidden = 0;
+    for (const auto& layer : g_app.layers) {
+        if (!layer.visible) ++hidden;
+    }
+    return hidden;
+}
+
+static PopupLayout ComputePopupLayout(UINT dpi) {
+    PopupLayout L{};
+    L.width = BlitTheme::Scale(332, dpi);
+    L.headerH = BlitTheme::Scale(30, dpi);
+    L.rowH = BlitTheme::Scale(32, dpi);
+    L.padX = BlitTheme::Scale(10, dpi);
+
+    int totalRows = static_cast<int>(g_app.layers.size());
+    L.visibleRows = (totalRows == 0)
+        ? 1
+        : (std::min)(totalRows, kPopupMaxVisibleRows);
+
+    L.height = L.headerH + L.visibleRows * L.rowH + BlitTheme::Scale(6, dpi);
+
+    int resetW = BlitTheme::Scale(62, dpi);
+    int resetH = BlitTheme::Scale(20, dpi);
+    L.rcShowAll = {
+        L.width - L.padX - resetW,
+        (L.headerH - resetH) / 2,
+        L.width - L.padX,
+        (L.headerH + resetH) / 2
+    };
+    return L;
+}
+
+static RECT GetRowCheckboxRect(const PopupLayout& L, int visRow, UINT dpi) {
+    int top = L.headerH + visRow * L.rowH;
+    int box = BlitTheme::Scale(15, dpi);
+    int x = L.padX;
+    int y = top + (L.rowH - box) / 2;
+    return { x, y, x + box, y + box };
+}
+
+static RECT GetRowPrivacyLockRect(const PopupLayout& L, int visRow, UINT dpi) {
+    int top = L.headerH + visRow * L.rowH;
+    int lockW = BlitTheme::Scale(26, dpi);
+    int lockH = BlitTheme::Scale(20, dpi);
+    int rightPad = (static_cast<int>(g_app.layers.size()) > kPopupMaxVisibleRows)
+        ? L.padX + BlitTheme::Scale(6, dpi)
+        : L.padX;
+    int x = L.width - rightPad - lockW;
+    int y = top + (L.rowH - lockH) / 2;
+    return { x, y, x + lockW, y + lockH };
+}
+
+static void PositionLayersPopupNearToolbar() {
+    if (!g_hLayersPopup || !g_hToolbar) return;
+
+    RECT rcPill{};
+    GetWindowRect(g_hToolbar, &rcPill);
+
+    HMONITOR hMon = MonitorFromWindow(g_hToolbar, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{ sizeof(mi) };
+    GetMonitorInfoW(hMon, &mi);
+
+    UINT dpiX = 96, dpiY = 96;
+    if (hMon && SUCCEEDED(GetDpiForMonitor(hMon, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) && dpiX != 0) {
+        g_popupDpi = dpiX;
+    }
+
+    PopupLayout L = ComputePopupLayout(g_popupDpi);
+    int gap = BlitTheme::Scale(6, g_popupDpi);
+
+    int x = rcPill.right - L.width;
+    if (x < mi.rcMonitor.left + gap) {
+        x = rcPill.left;
+    }
+    if (x + L.width > mi.rcMonitor.right - gap) {
+        x = mi.rcMonitor.right - L.width - gap;
+    }
+
+    bool expandUpward = (static_cast<int>(g_anchor) >= 2) || (rcPill.bottom + gap + L.height > mi.rcMonitor.bottom);
+    int y = expandUpward
+        ? (rcPill.top - gap - L.height)
+        : (rcPill.bottom + gap);
+
+    y = (std::max)(static_cast<int>(mi.rcMonitor.top + gap),
+        (std::min)(y, static_cast<int>(mi.rcMonitor.bottom - L.height - gap)));
+
+    SetWindowPos(
+        g_hLayersPopup,
+        HWND_TOPMOST,
+        x,
+        y,
+        L.width,
+        L.height,
+        SWP_NOACTIVATE | SWP_NOZORDER);
+}
+
 static void GetButtonRects(int w, int h, UINT dpi, RECT outRects[BTN_COUNT]) {
     int pad = ScalePx(4, dpi);
-    int gripW = ScalePx(16, dpi);
+    int gripW = ScalePx(14, dpi);
     int btnW = ScalePx(36, dpi);
     int gap = ScalePx(2, dpi);
-    int sepGap = ScalePx(6, dpi);
+    int sepGap = ScalePx(4, dpi);
     int btnH = h - pad * 2;
 
     int x = pad;
@@ -70,6 +194,8 @@ static void GetButtonRects(int w, int h, UINT dpi, RECT outRects[BTN_COUNT]) {
     outRects[BTN_REGION] = { x, pad, x + btnW,  pad + btnH }; x += btnW + gap;
     outRects[BTN_WINDOW] = { x, pad, x + btnW,  pad + btnH }; x += btnW + gap;
     outRects[BTN_FULLSCREEN] = { x, pad, x + btnW,  pad + btnH }; x += btnW + sepGap;
+    outRects[BTN_LAYER_MODE] = { x, pad, x + btnW,  pad + btnH }; x += btnW + gap;
+    outRects[BTN_LAYERS] = { x, pad, x + btnW,  pad + btnH }; x += btnW + sepGap;
     outRects[BTN_DELAY_3] = { x, pad, x + btnW,  pad + btnH }; x += btnW + gap;
     outRects[BTN_DELAY_5] = { x, pad, x + btnW,  pad + btnH }; x += btnW + sepGap;
     outRects[BTN_CLOSE] = { x, pad, x + btnW,  pad + btnH };
@@ -79,7 +205,7 @@ bool GetPillAnchorRect(int anchorIndex, RECT& outRect) {
     RECT rcMon = {};
     UINT dpi = GetPrimaryMonitorDpi(rcMon);
 
-    int pillW = ScalePx(256, dpi);
+    int pillW = ScalePx(332, dpi);
     int pillH = ScalePx(40, dpi);
     int margin = ScalePx(14, dpi);
 
@@ -117,6 +243,9 @@ static void PositionToolbarAtAnchor() {
     if (GetPillAnchorRect(static_cast<int>(g_anchor), rc)) {
         SetWindowPos(g_hToolbar, HWND_TOPMOST, rc.left, rc.top,
             rc.right - rc.left, rc.bottom - rc.top, SWP_NOACTIVATE);
+    }
+    if (IsLayersPopupOpen()) {
+        PositionLayersPopupNearToolbar();
     }
 }
 
@@ -203,6 +332,45 @@ static void DrawGlyph(HDC hdc, int btn, const RECT& rc, UINT dpi) {
         MoveToEx(hdc, R - arm, B, nullptr); LineTo(hdc, R, B); LineTo(hdc, R, B - arm - 1);
         break;
     }
+    case BTN_LAYER_MODE: {
+        int off = ScalePx(3, dpi);
+        int halfW = ScalePx(6, dpi);
+        int halfH = ScalePx(4, dpi);
+
+        // Back layer (top-left)
+        Rectangle(hdc, cx - halfW - off / 2, cy - halfH - off, cx + halfW - off / 2, cy + halfH - off);
+        // Front layer (bottom-right)
+        Rectangle(hdc, cx - halfW + off / 2, cy - halfH + off, cx + halfW + off / 2, cy + halfH + off);
+        break;
+    }
+    case BTN_LAYERS: {
+        int halfW = BlitTheme::Scale(6, dpi);
+        int stepY = BlitTheme::Scale(4, dpi);
+
+        HPEN hListPen = CreatePen(PS_SOLID, (std::max)(1, BlitTheme::Scale(2, dpi)), fg);
+        HGDIOBJ hPrevPen = SelectObject(hdc, hListPen);
+        for (int row = -1; row <= 1; ++row) {
+            int y = cy + row * stepY;
+            MoveToEx(hdc, cx - halfW, y, nullptr);
+            LineTo(hdc, cx + halfW, y);
+        }
+        SelectObject(hdc, hPrevPen);
+        DeleteObject(hListPen);
+
+        if (g_config.layerMode && CountHiddenLayers() > 0) {
+            int dotR = BlitTheme::Scale(3, dpi);
+            HBRUSH hDot = CreateSolidBrush(kAccentColor);
+            HPEN hDotPen = CreatePen(PS_SOLID, 1, RGB(24, 24, 24));
+            HGDIOBJ hOldB = SelectObject(hdc, hDot);
+            HGDIOBJ hOldP = SelectObject(hdc, hDotPen);
+            Ellipse(hdc, rc.right - dotR * 3, rc.top + dotR, rc.right - dotR, rc.top + dotR * 3);
+            SelectObject(hdc, hOldB);
+            SelectObject(hdc, hOldP);
+            DeleteObject(hDot);
+            DeleteObject(hDotPen);
+        }
+        break;
+    }
     case BTN_DELAY_3:
     case BTN_DELAY_5: {
         const wchar_t* label = (btn == BTN_DELAY_3) ? L"3s" : L"5s";
@@ -253,7 +421,9 @@ static void PaintToolbar(HWND hWnd, HDC hPaintDC) {
 
     for (int i = 0; i < BTN_COUNT; ++i) {
         bool isActiveMode = (i == BTN_REGION && g_app.mode == CaptureMode::Region) ||
-            (i == BTN_WINDOW && g_app.mode == CaptureMode::Window);
+            (i == BTN_WINDOW && g_app.mode == CaptureMode::Window) ||
+            (i == BTN_LAYER_MODE && g_config.layerMode) ||
+            (i == BTN_LAYERS && IsLayersPopupOpen());
 
         if (i != BTN_GRIP) {
             COLORREF fill = 0;
@@ -334,6 +504,9 @@ static LRESULT CALLBACK ToolbarWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 ptScreen.x - g_pillDragStart.x,
                 ptScreen.y - g_pillDragStart.y,
                 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+            if (IsLayersPopupOpen()) {
+                PositionLayersPopupNearToolbar();
+            }
 
             int preview = static_cast<int>(NearestAnchorToPoint(ptScreen));
             if (preview != g_app.pillSnapPreview) {
@@ -429,6 +602,14 @@ static LRESULT CALLBACK ToolbarWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         case BTN_FULLSCREEN:
             CaptureFullVirtualScreen();
             break;
+        case BTN_LAYER_MODE:
+            if (g_app.hMsgWnd) {
+                PostMessageW(g_app.hMsgWnd, WM_APP_TOGGLE_LAYER_MODE, 0, 0);
+            }
+            break;
+        case BTN_LAYERS:
+            ToggleLayersPopup();
+            break;
         case BTN_DELAY_3:
             EndCaptureSession();
             StartDelayedCapture(3);
@@ -448,6 +629,329 @@ static LRESULT CALLBACK ToolbarWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
+static void PaintLayersPopup(HWND hWnd) {
+    PAINTSTRUCT ps{};
+    HDC hdc = BeginPaint(hWnd, &ps);
+
+    RECT rcClient{};
+    GetClientRect(hWnd, &rcClient);
+    int w = rcClient.right - rcClient.left;
+    int h = rcClient.bottom - rcClient.top;
+    if (w <= 0 || h <= 0) {
+        EndPaint(hWnd, &ps);
+        return;
+    }
+
+    HDC hMemDC = CreateCompatibleDC(hdc);
+    HBITMAP hBmp = CreateCompatibleBitmap(hdc, w, h);
+    HGDIOBJ hOldBmp = SelectObject(hMemDC, hBmp);
+
+    constexpr COLORREF kPopupBg = RGB(31, 31, 31);      // #1F1F1F
+    constexpr COLORREF kHeaderBg = RGB(26, 26, 26);     // #1A1A1A
+    constexpr COLORREF kRowHoverBg = RGB(45, 45, 45);   // #2D2D2D
+    constexpr COLORREF kBorderCol = RGB(54, 54, 54);    // #363636
+    constexpr COLORREF kTextPrimary = RGB(240, 240, 240);
+    constexpr COLORREF kTextMuted = RGB(136, 136, 136);
+    constexpr COLORREF kLockActiveBg = RGB(196, 43, 28);
+    constexpr COLORREF kLockIdleBg = RGB(44, 44, 44);
+
+    HBRUSH hBgBrush = CreateSolidBrush(kPopupBg);
+    FillRect(hMemDC, &rcClient, hBgBrush);
+    DeleteObject(hBgBrush);
+
+    PopupLayout L = ComputePopupLayout(g_popupDpi);
+
+    RECT rcHeader{ 0, 0, w, L.headerH };
+    HBRUSH hHdrBrush = CreateSolidBrush(kHeaderBg);
+    FillRect(hMemDC, &rcHeader, hHdrBrush);
+    DeleteObject(hHdrBrush);
+
+    HPEN hDivPen = CreatePen(PS_SOLID, 1, kBorderCol);
+    HGDIOBJ hOldPen = SelectObject(hMemDC, hDivPen);
+    MoveToEx(hMemDC, 0, L.headerH - 1, nullptr);
+    LineTo(hMemDC, w, L.headerH - 1);
+
+    SetBkMode(hMemDC, TRANSPARENT);
+    HGDIOBJ hOldFont = SelectObject(hMemDC, g_hLayerTitleFont);
+
+    int totalCount = static_cast<int>(g_app.layers.size());
+    int hiddenCount = CountHiddenLayers();
+    int visibleCount = totalCount - hiddenCount;
+
+    wchar_t headerText[96]{};
+    swprintf_s(headerText, L"Layers (%d/%d visible)", visibleCount, totalCount);
+    SetTextColor(hMemDC, kTextPrimary);
+    RECT rcHdrText{ L.padX, 0, L.rcShowAll.left - BlitTheme::Scale(6, g_popupDpi), L.headerH };
+    DrawTextW(hMemDC, headerText, -1, &rcHdrText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    if (hiddenCount > 0) {
+        HBRUSH hResetBrush = CreateSolidBrush(g_popupHoverReset ? kAccentColor : RGB(48, 48, 48));
+        HGDIOBJ hOldBrush = SelectObject(hMemDC, hResetBrush);
+        RoundRect(hMemDC, L.rcShowAll.left, L.rcShowAll.top, L.rcShowAll.right, L.rcShowAll.bottom,
+            BlitTheme::Scale(4, g_popupDpi), BlitTheme::Scale(4, g_popupDpi));
+        SelectObject(hMemDC, hOldBrush);
+        DeleteObject(hResetBrush);
+
+        SelectObject(hMemDC, g_hLayerSubFont);
+        SetTextColor(hMemDC, kTextPrimary);
+        DrawTextW(hMemDC, L"Show All", -1, &L.rcShowAll, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    if (totalCount == 0) {
+        SelectObject(hMemDC, g_hLayerTitleFont);
+        SetTextColor(hMemDC, kTextMuted);
+        RECT rcEmpty{ L.padX, L.headerH, w - L.padX, L.headerH + L.rowH };
+        DrawTextW(hMemDC, L"No capturable windows found", -1, &rcEmpty,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    else {
+        int maxScroll = (std::max)(0, totalCount - kPopupMaxVisibleRows);
+        g_popupScrollIdx = (std::max)(0, (std::min)(g_popupScrollIdx, maxScroll));
+
+        for (int visRow = 0; visRow < L.visibleRows; ++visRow) {
+            int idx = g_popupScrollIdx + visRow;
+            if (idx >= totalCount) break;
+
+            const WindowLayer& layer = g_app.layers[idx];
+            int rowTop = L.headerH + visRow * L.rowH;
+            RECT rcRow{ 1, rowTop, w - 1, rowTop + L.rowH };
+
+            if (g_popupHoverRow == idx) {
+                HBRUSH hHover = CreateSolidBrush(kRowHoverBg);
+                FillRect(hMemDC, &rcRow, hHover);
+                DeleteObject(hHover);
+            }
+
+            RECT rcChk = GetRowCheckboxRect(L, visRow, g_popupDpi);
+            if (layer.rootOwnerHwnd != nullptr) {
+                int indent = BlitTheme::Scale(8, g_popupDpi);
+                rcChk.left += indent;
+                rcChk.right += indent;
+            }
+
+            if (layer.visible) {
+                HBRUSH hChkFill = CreateSolidBrush(kAccentColor);
+                HGDIOBJ hOldBrush = SelectObject(hMemDC, hChkFill);
+                HPEN hChkPen = CreatePen(PS_SOLID, 1, kAccentColor);
+                SelectObject(hMemDC, hChkPen);
+                RoundRect(hMemDC, rcChk.left, rcChk.top, rcChk.right, rcChk.bottom,
+                    BlitTheme::Scale(3, g_popupDpi), BlitTheme::Scale(3, g_popupDpi));
+                SelectObject(hMemDC, hOldBrush);
+                DeleteObject(hChkFill);
+
+                HPEN hTickPen = CreatePen(PS_SOLID, (std::max)(1, BlitTheme::Scale(2, g_popupDpi)), RGB(255, 255, 255));
+                SelectObject(hMemDC, hTickPen);
+                int cw = rcChk.right - rcChk.left;
+                int ch = rcChk.bottom - rcChk.top;
+                MoveToEx(hMemDC, rcChk.left + cw * 22 / 100, rcChk.top + ch * 52 / 100, nullptr);
+                LineTo(hMemDC, rcChk.left + cw * 44 / 100, rcChk.top + ch * 74 / 100);
+                LineTo(hMemDC, rcChk.left + cw * 80 / 100, rcChk.top + ch * 28 / 100);
+                SelectObject(hMemDC, hDivPen);
+                DeleteObject(hChkPen);
+                DeleteObject(hTickPen);
+            }
+            else {
+                HBRUSH hEmptyBox = CreateSolidBrush(RGB(24, 24, 24));
+                HGDIOBJ hOldBrush = SelectObject(hMemDC, hEmptyBox);
+                HPEN hBoxPen = CreatePen(PS_SOLID, 1, RGB(96, 96, 96));
+                SelectObject(hMemDC, hBoxPen);
+                RoundRect(hMemDC, rcChk.left, rcChk.top, rcChk.right, rcChk.bottom,
+                    BlitTheme::Scale(3, g_popupDpi), BlitTheme::Scale(3, g_popupDpi));
+                SelectObject(hMemDC, hOldBrush);
+                SelectObject(hMemDC, hDivPen);
+                DeleteObject(hEmptyBox);
+                DeleteObject(hBoxPen);
+            }
+
+            RECT rcLock = GetRowPrivacyLockRect(L, visRow, g_popupDpi);
+            bool isLocked = !layer.isTaskbar && IsProcessHiddenInConfig(layer.processName);
+
+            if (!layer.isTaskbar) {
+                bool isLockHovered = (g_popupHoverRow == idx && g_popupHoverLock);
+
+                COLORREF lockFill = isLocked
+                    ? kLockActiveBg
+                    : (isLockHovered ? RGB(66, 66, 66) : kLockIdleBg);
+                COLORREF lockBorder = isLocked
+                    ? kLockActiveBg
+                    : (isLockHovered ? RGB(130, 130, 130) : RGB(72, 72, 72));
+
+                HBRUSH hLockBrush = CreateSolidBrush(lockFill);
+                HPEN hLockPen = CreatePen(PS_SOLID, 1, lockBorder);
+                HGDIOBJ hOldBrush = SelectObject(hMemDC, hLockBrush);
+                SelectObject(hMemDC, hLockPen);
+                RoundRect(hMemDC, rcLock.left, rcLock.top, rcLock.right, rcLock.bottom,
+                    BlitTheme::Scale(4, g_popupDpi), BlitTheme::Scale(4, g_popupDpi));
+                SelectObject(hMemDC, hOldBrush);
+                SelectObject(hMemDC, hDivPen);
+                DeleteObject(hLockBrush);
+                DeleteObject(hLockPen);
+
+                SelectObject(hMemDC, g_hLayerSubFont);
+                SetTextColor(hMemDC, isLocked ? RGB(255, 255, 255) : kTextMuted);
+                DrawTextW(hMemDC, L"[P]", -1, &rcLock, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+
+            int textLeft = rcChk.right + BlitTheme::Scale(8, g_popupDpi);
+            int textRight = (layer.isTaskbar ? rcLock.right : rcLock.left) - BlitTheme::Scale(8, g_popupDpi);
+
+            if (!layer.processName.empty() && textRight - textLeft > BlitTheme::Scale(110, g_popupDpi)) {
+                int procW = BlitTheme::Scale(84, g_popupDpi);
+                RECT rcProc{ textRight - procW, rowTop, textRight, rowTop + L.rowH };
+                SelectObject(hMemDC, g_hLayerSubFont);
+                SetTextColor(hMemDC, isLocked ? RGB(242, 139, 130) : kTextMuted);
+                DrawTextW(hMemDC, layer.processName.c_str(), -1, &rcProc,
+                    DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                textRight = rcProc.left - BlitTheme::Scale(6, g_popupDpi);
+            }
+
+            if (textRight > textLeft) {
+                RECT rcTitle{ textLeft, rowTop, textRight, rowTop + L.rowH };
+                SelectObject(hMemDC, g_hLayerTitleFont);
+                SetTextColor(hMemDC, layer.visible ? kTextPrimary : kTextMuted);
+                DrawTextW(hMemDC, layer.title.c_str(), -1, &rcTitle,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            }
+        }
+
+        if (totalCount > kPopupMaxVisibleRows) {
+            int trackTop = L.headerH + BlitTheme::Scale(4, g_popupDpi);
+            int trackBot = h - BlitTheme::Scale(6, g_popupDpi);
+            int trackH = trackBot - trackTop;
+            int thumbH = (std::max)(BlitTheme::Scale(18, g_popupDpi), trackH * kPopupMaxVisibleRows / totalCount);
+            int thumbY = trackTop + (trackH - thumbH) * g_popupScrollIdx / maxScroll;
+
+            RECT rcThumb{
+                w - BlitTheme::Scale(5, g_popupDpi),
+                thumbY,
+                w - BlitTheme::Scale(2, g_popupDpi),
+                thumbY + thumbH
+            };
+            HBRUSH hThumb = CreateSolidBrush(RGB(96, 96, 96));
+            FillRect(hMemDC, &rcThumb, hThumb);
+            DeleteObject(hThumb);
+        }
+    }
+
+    HGDIOBJ hNullBrush = SelectObject(hMemDC, GetStockObject(HOLLOW_BRUSH));
+    Rectangle(hMemDC, 0, 0, w, h);
+    SelectObject(hMemDC, hNullBrush);
+
+    SelectObject(hMemDC, hOldFont);
+    SelectObject(hMemDC, hOldPen);
+    DeleteObject(hDivPen);
+
+    BitBlt(hdc, 0, 0, w, h, hMemDC, 0, 0, SRCCOPY);
+    SelectObject(hMemDC, hOldBmp);
+    DeleteObject(hBmp);
+    DeleteDC(hMemDC);
+
+    EndPaint(hWnd, &ps);
+}
+
+static LRESULT CALLBACK LayersPopupWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+
+    case WM_MOUSEMOVE: {
+        TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hWnd, 0 };
+        TrackMouseEvent(&tme);
+
+        POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        PopupLayout L = ComputePopupLayout(g_popupDpi);
+
+        int newHoverRow = -1;
+        bool newHoverLock = false;
+        bool newHoverReset = (CountHiddenLayers() > 0) && PtInRect(&L.rcShowAll, pt);
+
+        if (!newHoverReset && pt.y >= L.headerH && !g_app.layers.empty()) {
+            int visRow = (pt.y - L.headerH) / L.rowH;
+            int idx = g_popupScrollIdx + visRow;
+            if (visRow >= 0 && visRow < L.visibleRows && idx < static_cast<int>(g_app.layers.size())) {
+                newHoverRow = idx;
+                if (!g_app.layers[idx].isTaskbar) {
+                    RECT rcLock = GetRowPrivacyLockRect(L, visRow, g_popupDpi);
+                    newHoverLock = PtInRect(&rcLock, pt) != FALSE;
+                }
+            }
+        }
+
+        if (newHoverRow != g_popupHoverRow ||
+            newHoverLock != g_popupHoverLock ||
+            newHoverReset != g_popupHoverReset) {
+            g_popupHoverRow = newHoverRow;
+            g_popupHoverLock = newHoverLock;
+            g_popupHoverReset = newHoverReset;
+            RepaintLayersPopup();
+        }
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+        if (g_popupHoverRow != -1 || g_popupHoverLock || g_popupHoverReset) {
+            g_popupHoverRow = -1;
+            g_popupHoverLock = false;
+            g_popupHoverReset = false;
+            RepaintLayersPopup();
+        }
+        return 0;
+
+    case WM_MOUSEWHEEL: {
+        int totalCount = static_cast<int>(g_app.layers.size());
+        if (totalCount > kPopupMaxVisibleRows) {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            g_popupScrollIdx += (delta > 0) ? -1 : 1;
+            int maxScroll = totalCount - kPopupMaxVisibleRows;
+            g_popupScrollIdx = (std::max)(0, (std::min)(g_popupScrollIdx, maxScroll));
+            RepaintLayersPopup();
+        }
+        return 0;
+    }
+
+    case WM_LBUTTONUP: {
+        POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        PopupLayout L = ComputePopupLayout(g_popupDpi);
+
+        if (CountHiddenLayers() > 0 && PtInRect(&L.rcShowAll, pt)) {
+            ShowAllLayers();
+            RepaintToolbar();
+            RepaintLayersPopup();
+            return 0;
+        }
+
+        if (pt.y >= L.headerH && !g_app.layers.empty()) {
+            int visRow = (pt.y - L.headerH) / L.rowH;
+            int idx = g_popupScrollIdx + visRow;
+            if (visRow >= 0 && visRow < L.visibleRows && idx < static_cast<int>(g_app.layers.size())) {
+                RECT rcLock = GetRowPrivacyLockRect(L, visRow, g_popupDpi);
+                if (!g_app.layers[idx].isTaskbar && PtInRect(&rcLock, pt)) {
+                    const std::wstring exe = g_app.layers[idx].processName;
+                    if (!exe.empty()) {
+                        bool nextLocked = !IsProcessHiddenInConfig(exe);
+                        ApplyProcessPrivacyLock(exe, nextLocked);
+                    }
+                }
+                else {
+                    ToggleLayerGroupVisibility(static_cast<size_t>(idx));
+                }
+                RepaintToolbar();
+                RepaintLayersPopup();
+            }
+        }
+        return 0;
+    }
+
+    case WM_PAINT:
+        PaintLayersPopup(hWnd);
+        return 0;
+
+    case WM_ERASEBKGND:
+        return 1;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
 void RegisterToolbarClass(HINSTANCE hInst) {
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -456,6 +960,15 @@ void RegisterToolbarClass(HINSTANCE hInst) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = kToolbarWndClass;
     RegisterClassExW(&wc);
+
+    WNDCLASSEXW wcPopup = {};
+    wcPopup.cbSize = sizeof(wcPopup);
+    wcPopup.style = CS_HREDRAW | CS_VREDRAW;
+    wcPopup.lpfnWndProc = LayersPopupWndProc;
+    wcPopup.hInstance = hInst;
+    wcPopup.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wcPopup.lpszClassName = kLayersPopupWndClass;
+    RegisterClassExW(&wcPopup);
 }
 
 void CreateAndShowToolbar() {
@@ -486,7 +999,7 @@ void CreateAndShowToolbar() {
         kToolbarWndClass,
         L"",
         WS_POPUP,
-        0, 0, 180, 40,
+        0, 0, 332, 40,
         hOwnerOverlay, nullptr, g_app.hInst, nullptr
     );
 
@@ -504,6 +1017,7 @@ void CreateAndShowToolbar() {
 }
 
 void DestroyToolbar() {
+    CloseLayersPopup();
     if (g_hDelayFont) {
         DeleteObject(g_hDelayFont);
         g_hDelayFont = nullptr;
@@ -512,10 +1026,12 @@ void DestroyToolbar() {
         DestroyWindow(g_hToolbar);
         g_hToolbar = nullptr;
     }
-
 }
 
 void SetToolbarVisible(bool visible) {
+    if (!visible && IsLayersPopupOpen()) {
+        CloseLayersPopup();
+    }
     if (!g_hToolbar) return;
     ShowWindow(g_hToolbar, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
     if (visible) {
@@ -529,5 +1045,75 @@ void RepaintToolbar() {
     if (g_hToolbar) {
         InvalidateRect(g_hToolbar, nullptr, FALSE);
         UpdateWindow(g_hToolbar);
+    }
+}
+
+bool IsLayersPopupOpen() {
+    return g_hLayersPopup != nullptr && IsWindowVisible(g_hLayersPopup);
+}
+
+void RepaintLayersPopup() {
+    if (g_hLayersPopup && IsWindowVisible(g_hLayersPopup)) {
+        InvalidateRect(g_hLayersPopup, nullptr, FALSE);
+        UpdateWindow(g_hLayersPopup);
+    }
+}
+
+void CloseLayersPopup() {
+    if (g_hLayersPopup) {
+        DestroyWindow(g_hLayersPopup);
+        g_hLayersPopup = nullptr;
+    }
+    if (g_hLayerTitleFont) {
+        DeleteObject(g_hLayerTitleFont);
+        g_hLayerTitleFont = nullptr;
+    }
+    if (g_hLayerSubFont) {
+        DeleteObject(g_hLayerSubFont);
+        g_hLayerSubFont = nullptr;
+    }
+    g_popupScrollIdx = 0;
+    g_popupHoverRow = -1;
+    g_popupHoverLock = false;
+    g_popupHoverReset = false;
+    RepaintToolbar();
+}
+
+void ToggleLayersPopup() {
+    if (IsLayersPopupOpen()) {
+        CloseLayersPopup();
+        return;
+    }
+
+    if (!g_app.isCapturing || !g_hToolbar) {
+        return;
+    }
+
+    if (!g_config.layerMode) {
+        ToggleCaptureLayerMode();
+    }
+
+    RECT dummy = {};
+    g_popupDpi = GetPrimaryMonitorDpi(dummy);
+    g_hLayerTitleFont = BlitTheme::CreateUiFont(g_popupDpi, 9, false);
+    g_hLayerSubFont = BlitTheme::CreateUiFont(g_popupDpi, 8, true);
+
+    PopupLayout L = ComputePopupLayout(g_popupDpi);
+    g_hLayersPopup = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        kLayersPopupWndClass,
+        L"",
+        WS_POPUP,
+        0, 0, L.width, L.height,
+        g_hToolbar,
+        nullptr,
+        g_app.hInst,
+        nullptr);
+
+    if (g_hLayersPopup) {
+        PositionLayersPopupNearToolbar();
+        ShowWindow(g_hLayersPopup, SW_SHOWNA);
+        UpdateWindow(g_hLayersPopup);
+        RepaintToolbar();
     }
 }

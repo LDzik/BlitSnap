@@ -1,7 +1,9 @@
 #include "overlay.h"
 #include "capture.h"
+#include "layers.h"
 #include "toolbar.h"
 #include "export.h"
+#include "config.h"
 #include "toast.h"
 #include <windowsx.h>
 #include <wchar.h>
@@ -34,22 +36,33 @@ static RECT GetNormalizedSelectionRect() {
     return rc;
 }
 
-static bool UpdateHoveredWindowAt(POINT pt) {
-    RECT found = {};
-    bool hit = false;
-    for (const RECT& rc : g_app.windowRects) {
-        if (PtInRect(&rc, pt)) {
-            found = rc;
-            hit = true;
-            break;
+void UpdateHoveredWindowAt(POINT pt) {
+    RECT rcNew{};
+    int newLayerIdx = -1;
+
+    if (g_config.layerMode && !g_app.layers.empty()) {
+        for (size_t i = 0; i < g_app.layers.size(); ++i) {
+            if (g_app.layers[i].visible && PtInRect(&g_app.layers[i].rcExtended, pt)) {
+                rcNew = g_app.layers[i].rcExtended;
+                newLayerIdx = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    else {
+        for (const RECT& rc : g_app.windowRects) {
+            if (PtInRect(&rc, pt)) {
+                rcNew = rc;
+                break;
+            }
         }
     }
 
-    bool changed = (hit != g_app.hasHoveredWin) ||
-        (hit && !EqualRect(&found, &g_app.rcHoveredWin));
-    g_app.hasHoveredWin = hit;
-    g_app.rcHoveredWin = found;
-    return changed;
+    if (!EqualRect(&rcNew, &g_app.rcHoveredWin) || newLayerIdx != g_app.hoveredLayerIndex) {
+        g_app.rcHoveredWin = rcNew;
+        g_app.hoveredLayerIndex = newLayerIdx;
+        InvalidateAllOverlays();
+    }
 }
 
 static void DrawSelectionBoxOnMonitor(MonitorOverlay& mon, const RECT& rcBox, int borderPx) {
@@ -61,8 +74,8 @@ static void DrawSelectionBoxOnMonitor(MonitorOverlay& mon, const RECT& rcBox, in
     int visW = rcVis.right - rcVis.left;
     int visH = rcVis.bottom - rcVis.top;
 
-    int srcX = rcVis.left - g_app.pristine.vx;
-    int srcY = rcVis.top - g_app.pristine.vy;
+    int srcX = rcVis.left - g_app.vx;
+    int srcY = rcVis.top - g_app.vy;
 
     BitBlt(mon.hBackDC, dstX, dstY, visW, visH, g_app.pristine.hDC, srcX, srcY, SRCCOPY);
 
@@ -122,9 +135,9 @@ static void DrawPixelLoupeOnMonitor(MonitorOverlay& mon) {
     COLORREF centerRgb = RGB(0, 0, 0);
 
     for (int gy = 0; gy < kGridCount; ++gy) {
-        int srcY = (g_app.ptCursor.y - kHalfGrid + gy) - g_app.pristine.vy;
+        int srcY = (g_app.ptCursor.y - kHalfGrid + gy) - g_app.vy;
         for (int gx = 0; gx < kGridCount; ++gx) {
-            int srcX = (g_app.ptCursor.x - kHalfGrid + gx) - g_app.pristine.vx;
+            int srcX = (g_app.ptCursor.x - kHalfGrid + gx) - g_app.vx;
 
             COLORREF c = RGB(20, 20, 20);
             if (srcX >= 0 && srcX < g_app.pristine.width &&
@@ -292,8 +305,8 @@ static void DrawPillSnapIndicatorsOnMonitor(MonitorOverlay& mon) {
 static void PaintMonitorOverlay(MonitorOverlay& mon, HDC hPaintDC) {
     int monW = mon.rect.right - mon.rect.left;
     int monH = mon.rect.bottom - mon.rect.top;
-    int srcMonX = mon.rect.left - g_app.dimmed.vx;
-    int srcMonY = mon.rect.top - g_app.dimmed.vy;
+    int srcMonX = mon.rect.left - g_app.vx;
+    int srcMonY = mon.rect.top - g_app.vy;
 
     BitBlt(mon.hBackDC, 0, 0, monW, monH, g_app.dimmed.hDC, srcMonX, srcMonY, SRCCOPY);
 
@@ -303,7 +316,7 @@ static void PaintMonitorOverlay(MonitorOverlay& mon, HDC hPaintDC) {
         }
     }
     else if (g_app.mode == CaptureMode::Window) {
-        if (g_app.hasHoveredWin) {
+        if (!IsRectEmpty(&g_app.rcHoveredWin)) {
             DrawSelectionBoxOnMonitor(mon, g_app.rcHoveredWin, 2);
         }
     }
@@ -341,6 +354,15 @@ static void CommitSelection(const RECT& rcFinal) {
     EndCaptureSession();
 }
 
+static void CommitLayerSelection(const WindowLayer& layer) {
+    std::wstring pngPath;
+    bool exported = ExportLayerToClipboardAndTemp(layer, &pngPath);
+    EndCaptureSession();
+    if (exported && g_config.showToast && !pngPath.empty()) {
+        ShowCaptureToast(pngPath.c_str());
+    }
+}
+
 void SetCaptureMode(CaptureMode newMode) {
     g_app.isDragging = false;
     g_app.dragCancelArm = false;
@@ -352,7 +374,8 @@ void SetCaptureMode(CaptureMode newMode) {
         UpdateHoveredWindowAt(pt);
     }
     else {
-        g_app.hasHoveredWin = false;
+        SetRectEmpty(&g_app.rcHoveredWin);
+        g_app.hoveredLayerIndex = -1;
     }
 
     InvalidateAllOverlays();
@@ -361,10 +384,10 @@ void SetCaptureMode(CaptureMode newMode) {
 
 void CaptureFullVirtualScreen() {
     RECT rcAll = {
-        g_app.pristine.vx,
-        g_app.pristine.vy,
-        g_app.pristine.vx + g_app.pristine.width,
-        g_app.pristine.vy + g_app.pristine.height
+        g_app.vx,
+        g_app.vy,
+        g_app.vx + g_app.vw,
+        g_app.vy + g_app.vh
     };
     CommitSelection(rcAll);
 }
@@ -392,7 +415,12 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 
         if (g_app.mode == CaptureMode::Window) {
             UpdateHoveredWindowAt(pt);
-            if (g_app.hasHoveredWin) {
+            if (g_config.layerMode &&
+                g_app.hoveredLayerIndex >= 0 &&
+                static_cast<size_t>(g_app.hoveredLayerIndex) < g_app.layers.size()) {
+                CommitLayerSelection(g_app.layers[g_app.hoveredLayerIndex]);
+            }
+            else if (!IsRectEmpty(&g_app.rcHoveredWin)) {
                 CommitSelection(g_app.rcHoveredWin);
             }
             return 0;
@@ -426,9 +454,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         }
 
         if (g_app.mode == CaptureMode::Window) {
-            if (UpdateHoveredWindowAt(pt)) {
-                InvalidateAllOverlays();
-            }
+            UpdateHoveredWindowAt(pt);
             return 0;
         }
 
@@ -580,6 +606,7 @@ void BeginCaptureSession() {
     g_app.overlays.clear();
     EnumDisplayMonitors(nullptr, nullptr, EnumMonitorsProc, 0);
     if (g_app.overlays.empty()) {
+        FreeLayerStack();
         FreeDibSurface(g_app.pristine);
         FreeDibSurface(g_app.dimmed);
         return;
@@ -684,6 +711,7 @@ void EndCaptureSession() {
     g_app.overlays.clear();
     g_app.windowRects.clear();
 
+    FreeLayerStack();
     FreeDibSurface(g_app.pristine);
     FreeDibSurface(g_app.dimmed);
 
@@ -692,7 +720,8 @@ void EndCaptureSession() {
     g_app.isCapturing = false;
     g_app.isDragging = false;
     g_app.dragCancelArm = false;
-    g_app.hasHoveredWin = false;
+    SetRectEmpty(&g_app.rcHoveredWin);
+    g_app.hoveredLayerIndex = -1;
     g_app.isDraggingPill = false;
     g_app.hasLeftDeadzone = false;
 
