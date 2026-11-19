@@ -3,6 +3,11 @@
 #include "timer.h"
 #include <windowsx.h>
 #include <cmath>
+#include <shellscalingapi.h>
+
+#pragma comment(lib, "shcore.lib")
+
+static HFONT g_hDelayFont = nullptr;
 
 constexpr wchar_t kToolbarWndClass[] = L"BlitSnap_Toolbar_Class";
 
@@ -45,10 +50,11 @@ static UINT GetPrimaryMonitorDpi(RECT& outWorkArea) {
     GetMonitorInfoW(hMon, &mi);
     outWorkArea = mi.rcMonitor;
 
-    HDC hdc = GetDC(nullptr);
-    int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
-    ReleaseDC(nullptr, hdc);
-    return dpi > 0 ? static_cast<UINT>(dpi) : 96;
+    UINT dpiX = 96, dpiY = 96;
+    if (FAILED(GetDpiForMonitor(hMon, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) || dpiX == 0) {
+        return 96;
+    }
+    return dpiX;
 }
 
 static void GetButtonRects(int w, int h, UINT dpi, RECT outRects[BTN_COUNT]) {
@@ -200,17 +206,12 @@ static void DrawGlyph(HDC hdc, int btn, const RECT& rc, UINT dpi) {
     case BTN_DELAY_3:
     case BTN_DELAY_5: {
         const wchar_t* label = (btn == BTN_DELAY_3) ? L"3s" : L"5s";
-        int fontH = ScalePx(13, dpi);
-        HFONT hFont = CreateFontW(-fontH, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-        HGDIOBJ oldFont = SelectObject(hdc, hFont);
+        HGDIOBJ oldFont = g_hDelayFont ? SelectObject(hdc, g_hDelayFont) : nullptr;
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, fg);
         RECT rcTxt = rc;
         DrawTextW(hdc, label, -1, &rcTxt, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        SelectObject(hdc, oldFont);
-        DeleteObject(hFont);
+        if (oldFont) SelectObject(hdc, oldFont);
         break;
     }
     case BTN_CLOSE: {
@@ -489,16 +490,29 @@ void CreateAndShowToolbar() {
         hOwnerOverlay, nullptr, g_app.hInst, nullptr
     );
 
+    RECT dummy = {};
+    UINT dpi = GetPrimaryMonitorDpi(dummy);
+    if (!g_hDelayFont) {
+        g_hDelayFont = CreateFontW(-ScalePx(13, dpi), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    }
+
     PositionToolbarAtAnchor();
     ShowWindow(g_hToolbar, SW_SHOWNOACTIVATE);
     UpdateWindow(g_hToolbar);
 }
 
 void DestroyToolbar() {
+    if (g_hDelayFont) {
+        DeleteObject(g_hDelayFont);
+        g_hDelayFont = nullptr;
+    }
     if (g_hToolbar) {
         DestroyWindow(g_hToolbar);
         g_hToolbar = nullptr;
     }
+
 }
 
 void SetToolbarVisible(bool visible) {

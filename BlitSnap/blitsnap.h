@@ -41,9 +41,12 @@ struct DibSurface {
 struct MonitorOverlay {
     HWND    hWnd = nullptr;
     RECT    rect = {};
+    UINT    dpi = 96;
     HBITMAP hBackBmp = nullptr;
     HDC     hBackDC = nullptr;
     HGDIOBJ hOldBackBmp = nullptr;
+    HFONT   hLoupeFont = nullptr;
+    HFONT   hBadgeFont = nullptr;
 };
 
 struct AppState {

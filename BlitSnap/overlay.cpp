@@ -7,8 +7,9 @@
 #include <wchar.h>
 #include <algorithm>
 #include <cmath>
+#include <shellscalingapi.h>
 
-static HFONT g_hLoupeFont = nullptr;
+#pragma comment(lib, "shcore.lib")
 
 static void InvalidateAllOverlays() {
     for (const auto& mon : g_app.overlays) {
@@ -92,10 +93,7 @@ static void DrawPixelLoupeOnMonitor(MonitorOverlay& mon) {
     constexpr int kGridCount = 9;
     constexpr int kHalfGrid = kGridCount / 2;
 
-    HDC hScreen = GetDC(nullptr);
-    int dpi = GetDeviceCaps(hScreen, LOGPIXELSX);
-    ReleaseDC(nullptr, hScreen);
-    if (dpi <= 0) dpi = 96;
+    int dpi = static_cast<int>(mon.dpi);
 
     int cellPx = std::max(8, MulDiv(10, dpi, 96));
     int gridPx = kGridCount * cellPx;
@@ -195,7 +193,7 @@ static void DrawPixelLoupeOnMonitor(MonitorOverlay& mon) {
         swprintf_s(line2, L"%d, %d", g_app.ptCursor.x, g_app.ptCursor.y);
     }
 
-    HGDIOBJ oldFont = g_hLoupeFont ? SelectObject(mon.hBackDC, g_hLoupeFont) : nullptr;
+    HGDIOBJ oldFont = mon.hLoupeFont ? SelectObject(mon.hBackDC, mon.hLoupeFont) : nullptr;
     SetBkMode(mon.hBackDC, TRANSPARENT);
 
     RECT rcText1 = { localX + 4, localY + gridPx + 3, localX + boxW - 4, localY + gridPx + footerH / 2 + 2 };
@@ -227,8 +225,8 @@ static void DrawCancelIndicatorOnMonitor(MonitorOverlay& mon) {
 
     if (!g_app.hasLeftDeadzone || !g_app.dragCancelArm) return;
 
-    int badgeW = 128;
-    int badgeH = 26;
+    int badgeW = MulDiv(128, mon.dpi, 96);
+    int badgeH = MulDiv(26, mon.dpi, 96);
     int bx = ox + 12;
     int by = oy - badgeH - 10;
 
@@ -247,24 +245,17 @@ static void DrawCancelIndicatorOnMonitor(MonitorOverlay& mon) {
     FrameRect(mon.hBackDC, &rcBadge, hBorder);
     DeleteObject(hBorder);
 
-    HFONT hFont = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-    HGDIOBJ oldFont = SelectObject(mon.hBackDC, hFont);
+    HGDIOBJ oldFont = mon.hBadgeFont ? SelectObject(mon.hBackDC, mon.hBadgeFont) : nullptr;
     SetBkMode(mon.hBackDC, TRANSPARENT);
     SetTextColor(mon.hBackDC, RGB(240, 240, 240));
     DrawTextW(mon.hBackDC, L"Release to cancel", -1, &rcBadge, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    SelectObject(mon.hBackDC, oldFont);
-    DeleteObject(hFont);
+    if (oldFont) SelectObject(mon.hBackDC, oldFont);
 }
 
 static void DrawPillSnapIndicatorsOnMonitor(MonitorOverlay& mon) {
     if (!g_app.isDraggingPill) return;
 
-    HFONT hFont = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-    HGDIOBJ oldFont = SelectObject(mon.hBackDC, hFont);
+    HGDIOBJ oldFont = mon.hBadgeFont ? SelectObject(mon.hBackDC, mon.hBadgeFont) : nullptr;
     SetBkMode(mon.hBackDC, TRANSPARENT);
 
     for (int i = 0; i < 4; ++i) {
@@ -295,8 +286,7 @@ static void DrawPillSnapIndicatorsOnMonitor(MonitorOverlay& mon) {
             -1, &rcLocal, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
-    SelectObject(mon.hBackDC, oldFont);
-    DeleteObject(hFont);
+    if (oldFont) SelectObject(mon.hBackDC, oldFont);
 }
 
 static void PaintMonitorOverlay(MonitorOverlay& mon, HDC hPaintDC) {
@@ -379,10 +369,6 @@ void CaptureFullVirtualScreen() {
     CommitSelection(rcAll);
 }
 
-static void ToggleCaptureMode(POINT) {
-    SetCaptureMode(g_app.mode == CaptureMode::Region ? CaptureMode::Window : CaptureMode::Region);
-}
-
 static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     auto* pMon = reinterpret_cast<MonitorOverlay*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
 
@@ -397,17 +383,6 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             PaintMonitorOverlay(*pMon, hdc);
         }
         EndPaint(hWnd, &ps);
-        return 0;
-    }
-
-    case WM_RBUTTONDOWN:
-    case WM_RBUTTONUP: {
-        if (!pMon) return 0;
-
-        if (g_app.isDragging) return 0;
-
-        POINT pt = { pMon->rect.left + GET_X_LPARAM(lParam), pMon->rect.top + GET_Y_LPARAM(lParam) };
-        ToggleCaptureMode(pt);
         return 0;
     }
 
@@ -509,12 +484,6 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             EndCaptureSession();
             return 0;
         }
-        if (wParam == VK_TAB) {
-            POINT pt = {};
-            GetCursorPos(&pt);
-            ToggleCaptureMode(pt);
-            return 0;
-        }
         break;
     }
     }
@@ -526,8 +495,14 @@ static BOOL CALLBACK EnumMonitorsProc(HMONITOR hMon, HDC, LPRECT, LPARAM) {
     mi.cbSize = sizeof(mi);
     if (!GetMonitorInfoW(hMon, &mi)) return TRUE;
 
+    UINT dpiX = 96, dpiY = 96;
+    if (FAILED(GetDpiForMonitor(hMon, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) || dpiX == 0) {
+        dpiX = 96;
+    }
+
     MonitorOverlay item = {};
     item.rect = mi.rcMonitor;
+    item.dpi = dpiX;
     g_app.overlays.push_back(item);
     return TRUE;
 }
@@ -584,7 +559,7 @@ void RegisterOverlayClass(HINSTANCE hInst) {
     wcOverlay.cbSize = sizeof(wcOverlay);
     wcOverlay.lpfnWndProc = OverlayWndProc;
     wcOverlay.hInstance = hInst;
-    wcOverlay.hCursor = LoadCursorW(nullptr, IDC_CROSS);
+    wcOverlay.hCursor = CreateInvertingCrosshairCursor();
     wcOverlay.lpszClassName = kOverlayWndClass;
     RegisterClassExW(&wcOverlay);
 }
@@ -629,6 +604,17 @@ void BeginCaptureSession() {
         mon.hBackBmp = CreateDIBSection(hScreenDC, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
         mon.hOldBackBmp = SelectObject(mon.hBackDC, mon.hBackBmp);
 
+
+        int loupeFontH = -MulDiv(8, static_cast<int>(mon.dpi), 72);
+        mon.hLoupeFont = CreateFontW(loupeFontH, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+
+        int badgeFontH = -MulDiv(9, static_cast<int>(mon.dpi), 72);
+        mon.hBadgeFont = CreateFontW(badgeFontH, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+
         mon.hWnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             kOverlayWndClass,
@@ -643,14 +629,6 @@ void BeginCaptureSession() {
     
 
     GetCursorPos(&g_app.ptCursor);
-    if (!g_hLoupeFont) {
-        int dpi = GetDeviceCaps(hScreenDC, LOGPIXELSX);
-        int fontH = -MulDiv(8, dpi > 0 ? dpi : 96, 72);
-        g_hLoupeFont = CreateFontW(fontH, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-    }
-
     ReleaseDC(nullptr, hScreenDC);
 
     g_app.isCapturing = true;
@@ -676,11 +654,6 @@ void EndCaptureSession() {
         ReleaseCapture();
     }
 
-    if (g_hLoupeFont) {
-        DeleteObject(g_hLoupeFont);
-        g_hLoupeFont = nullptr;
-    }
-
     DestroyToolbar();
 
     for (auto& mon : g_app.overlays) {
@@ -688,6 +661,16 @@ void EndCaptureSession() {
             DestroyWindow(mon.hWnd);
             mon.hWnd = nullptr;
         }
+
+        if (mon.hLoupeFont) {
+            DeleteObject(mon.hLoupeFont);
+            mon.hLoupeFont = nullptr;
+        }
+        if (mon.hBadgeFont) {
+            DeleteObject(mon.hBadgeFont);
+            mon.hBadgeFont = nullptr;
+        }
+
         if (mon.hBackDC) {
             if (mon.hOldBackBmp) SelectObject(mon.hBackDC, mon.hOldBackBmp);
             DeleteDC(mon.hBackDC);

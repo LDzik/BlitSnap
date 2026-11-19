@@ -79,27 +79,6 @@ static std::wstring WriteNamedPngToDisk(const void* data, DWORD byteCount) {
     return fullPath;
 }
 
-static bool SaveBytesToTempPng(const void* data, DWORD byteCount) {
-    wchar_t tempRoot[MAX_PATH] = {};
-    DWORD len = GetTempPathW(MAX_PATH, tempRoot);
-    if (len == 0 || len >= MAX_PATH - 32) return false;
-
-    wchar_t folderPath[MAX_PATH] = {};
-    swprintf_s(folderPath, L"%sBlitSnap", tempRoot);
-    CreateDirectoryW(folderPath, nullptr);
-
-    wchar_t filePath[MAX_PATH] = {};
-    swprintf_s(filePath, L"%s\\latest.png", folderPath);
-
-    HANDLE hFile = CreateFileW(filePath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) return false;
-
-    DWORD written = 0;
-    BOOL ok = WriteFile(hFile, data, byteCount, &written, nullptr);
-    CloseHandle(hFile);
-    return ok && (written == byteCount);
-}
-
 static HGLOBAL BuildBottomUpCfDib(const uint32_t* topDownPixels, int w, int h) {
     SIZE_T rowBytes = static_cast<SIZE_T>(w) * 4;
     SIZE_T pixelBytes = rowBytes * static_cast<SIZE_T>(h);
@@ -237,37 +216,7 @@ static HGLOBAL EncodePngAndSaveTemp(const uint32_t* topDownPixels, int w, int h)
 
         void* pPngBytes = GlobalLock(hStreamMem);
         if (pPngBytes) {
-            void* pPngBytes = GlobalLock(hStreamMem);
-            if (pPngBytes) {
-                WriteNamedPngToDisk(pPngBytes, pngSize);
-
-                hExactPngGlobal = GlobalAlloc(GMEM_MOVEABLE, pngSize);
-                if (hExactPngGlobal) {
-                    void* pDst = GlobalLock(hExactPngGlobal);
-                    if (pDst) {
-                        memcpy(pDst, pPngBytes, pngSize);
-                        GlobalUnlock(hExactPngGlobal);
-                    }
-                    else {
-                        GlobalFree(hExactPngGlobal);
-                        hExactPngGlobal = nullptr;
-                    }
-                }
-                GlobalUnlock(hStreamMem);
-            }
-
-            if (g_config.autoSave && !g_config.saveFolder.empty()) {
-                SHCreateDirectoryExW(nullptr, g_config.saveFolder.c_str(), nullptr);
-                std::wstring fileName = FormatCaptureFilename(g_config.filePattern, g_app.activeWindowTitle);
-                std::wstring fullPath = g_config.saveFolder + L"\\" + fileName + L".png";
-
-                HANDLE hOut = CreateFileW(fullPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-                if (hOut != INVALID_HANDLE_VALUE) {
-                    DWORD written = 0;
-                    WriteFile(hOut, pPngBytes, pngSize, &written, nullptr);
-                    CloseHandle(hOut);
-                }
-            }
+            WriteNamedPngToDisk(pPngBytes, pngSize);
 
             hExactPngGlobal = GlobalAlloc(GMEM_MOVEABLE, pngSize);
             if (hExactPngGlobal) {

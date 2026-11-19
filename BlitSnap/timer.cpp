@@ -2,6 +2,11 @@
 #include "overlay.h"
 #include <wchar.h>
 #include <atomic>
+#include <shellscalingapi.h>
+
+#pragma comment(lib, "shcore.lib")
+
+static HFONT g_hCountdownFont = nullptr;
 
 constexpr wchar_t kCountdownWndClass[] = L"BlitSnap_Countdown_Class";
 
@@ -35,18 +40,13 @@ static LRESULT CALLBACK CountdownWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         wchar_t numBuf[16] = {};
         swprintf_s(numBuf, L"%d", rem > 0 ? rem : 1);
 
-        int fontH = (rc.bottom - rc.top) * 58 / 100;
-        HFONT hFont = CreateFontW(-fontH, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-        HGDIOBJ oldFont = SelectObject(hdc, hFont);
+        HGDIOBJ oldFont = g_hCountdownFont ? SelectObject(hdc, g_hCountdownFont) : nullptr;
 
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(240, 240, 240));
         DrawTextW(hdc, numBuf, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-        SelectObject(hdc, oldFont);
-        DeleteObject(hFont);
+        if (oldFont) SelectObject(hdc, oldFont);
 
         EndPaint(hWnd, &ps);
         return 0;
@@ -87,6 +87,10 @@ static void DestroyCountdownBadge() {
     if (g_hCountdownWnd) {
         DestroyWindow(g_hCountdownWnd);
         g_hCountdownWnd = nullptr;
+    }
+    if (g_hCountdownFont) {
+        DeleteObject(g_hCountdownFont);
+        g_hCountdownFont = nullptr;
     }
 }
 
@@ -133,15 +137,23 @@ void StartDelayedCapture(int seconds) {
     MONITORINFO mi = { sizeof(mi) };
     GetMonitorInfoW(hMon, &mi);
 
-    HDC hdc = GetDC(nullptr);
-    int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
-    ReleaseDC(nullptr, hdc);
-    if (dpi <= 0) dpi = 96;
+    UINT dpiX = 96, dpiY = 96;
+    if (FAILED(GetDpiForMonitor(hMon, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) || dpiX == 0) {
+        dpiX = 96;
+    }
+    int dpi = static_cast<int>(dpiX);
 
     int boxSize = MulDiv(56, dpi, 96);
     int margin = MulDiv(18, dpi, 96);
     int x = mi.rcWork.right - boxSize - margin;
     int y = mi.rcWork.top + margin;
+
+    if (!g_hCountdownFont) {
+        int fontH = boxSize * 58 / 100;
+        g_hCountdownFont = CreateFontW(-fontH, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    }
 
     g_secondsLeft = seconds;
 
@@ -153,6 +165,8 @@ void StartDelayedCapture(int seconds) {
         x, y, boxSize, boxSize,
         nullptr, nullptr, g_app.hInst, nullptr
     );
+
+
     ShowWindow(g_hCountdownWnd, SW_SHOWNOACTIVATE);
     UpdateWindow(g_hCountdownWnd);
 

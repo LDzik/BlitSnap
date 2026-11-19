@@ -4,6 +4,9 @@
 #include <shobjidl.h>
 #include <windowsx.h>
 #include <wchar.h>
+#include <shellscalingapi.h>
+
+#pragma comment(lib, "shcore.lib")
 
 constexpr wchar_t kSettingsWndClass[] = L"BlitSnap_Settings_Class";
 
@@ -28,6 +31,13 @@ static HFONT   g_hUiFont = nullptr;
 static HFONT   g_hBoldFont = nullptr;
 static bool    g_chkAutoSave = false;
 static bool    g_chkShowToast = true;
+
+bool IsSettingsDialogMessage(MSG* pMsg) {
+    if (g_hSettingsWnd && IsWindow(g_hSettingsWnd)) {
+        return IsDialogMessageW(g_hSettingsWnd, pMsg) != FALSE;
+    }
+    return false;
+}
 
 static LRESULT CALLBACK DarkEditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     auto origProc = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
@@ -67,11 +77,9 @@ static LRESULT CALLBACK HoverButtonSubclassProc(HWND hWnd, UINT msg, WPARAM wPar
     auto origProc = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
 
     if (msg == WM_MOUSEMOVE) {
-        if ((GetWindowLongPtrW(hWnd, GWLP_USERDATA + 0) != 0)) {
+        if (GetPropW(hWnd, L"Hover") == nullptr) {
             TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hWnd, 0 };
             TrackMouseEvent(&tme);
-        }
-        if (GetPropW(hWnd, L"Hover") == nullptr) {
             SetPropW(hWnd, L"Hover", reinterpret_cast<HANDLE>(1));
             InvalidateRect(hWnd, nullptr, FALSE);
         }
@@ -156,9 +164,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
     case WM_CREATE: {
         BlitTheme::EnableDarkTitleBar(hWnd);
 
-        HDC hdc = GetDC(hWnd);
-        UINT dpi = static_cast<UINT>(GetDeviceCaps(hdc, LOGPIXELSX));
-        ReleaseDC(hWnd, hdc);
+        UINT dpi = GetDpiForWindow(hWnd);
         if (dpi == 0) dpi = 96;
 
         g_hBgBrush = CreateSolidBrush(BlitTheme::kBgWindow);
@@ -187,18 +193,18 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
             };
 
         HWND hChkAuto = makeCtrl(L"BUTTON", L"Auto-save PNG copies to disk (in addition to clipboard)",
-            BS_OWNERDRAW, 0, pad, y, fullW, rowH, ID_CHK_AUTOSAVE);
+            BS_OWNERDRAW | WS_TABSTOP, 0, pad, y, fullW, rowH, ID_CHK_AUTOSAVE);
         SubclassHoverButton(hChkAuto);
         y += rowH + BlitTheme::Scale(8, dpi);
 
         makeCtrl(L"STATIC", L"Save Folder:", 0, 0, pad, y, fullW, lblH, 0, true);
         y += lblH + BlitTheme::Scale(3, dpi);
 
-        HWND hEditDir = makeCtrl(L"EDIT", g_config.saveFolder.c_str(), ES_AUTOHSCROLL, WS_EX_CLIENTEDGE,
+        HWND hEditDir = makeCtrl(L"EDIT", g_config.saveFolder.c_str(), ES_AUTOHSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE,
             pad, y, fullW - browseW - gap, rowH, ID_EDIT_FOLDER);
         SubclassDarkEdit(hEditDir);
 
-        HWND hBtnDir = makeCtrl(L"BUTTON", L"...", BS_OWNERDRAW, 0,
+        HWND hBtnDir = makeCtrl(L"BUTTON", L"...", BS_OWNERDRAW | WS_TABSTOP, 0,
             pad + fullW - browseW, y, browseW, rowH, ID_BTN_BROWSE_DIR);
         SubclassHoverButton(hBtnDir);
         y += rowH + BlitTheme::Scale(14, dpi);
@@ -207,7 +213,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
             0, 0, pad, y, fullW, lblH, 0, true);
         y += lblH + BlitTheme::Scale(3, dpi);
 
-        HWND hEditPat = makeCtrl(L"EDIT", g_config.filePattern.c_str(), ES_AUTOHSCROLL, WS_EX_CLIENTEDGE,
+        HWND hEditPat = makeCtrl(L"EDIT", g_config.filePattern.c_str(), ES_AUTOHSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE,
             pad, y, fullW, rowH, ID_EDIT_PATTERN);
         SubclassDarkEdit(hEditPat);
         y += rowH + BlitTheme::Scale(4, dpi);
@@ -220,17 +226,17 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
             0, 0, pad, y, fullW, lblH, 0, true);
         y += lblH + BlitTheme::Scale(3, dpi);
 
-        HWND hEditExe = makeCtrl(L"EDIT", g_config.editorPath.c_str(), ES_AUTOHSCROLL, WS_EX_CLIENTEDGE,
+        HWND hEditExe = makeCtrl(L"EDIT", g_config.editorPath.c_str(), ES_AUTOHSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE,
             pad, y, fullW - browseW - gap, rowH, ID_EDIT_EDITOR);
         SubclassDarkEdit(hEditExe);
 
-        HWND hBtnExe = makeCtrl(L"BUTTON", L"...", BS_OWNERDRAW, 0,
+        HWND hBtnExe = makeCtrl(L"BUTTON", L"...", BS_OWNERDRAW | WS_TABSTOP, 0,
             pad + fullW - browseW, y, browseW, rowH, ID_BTN_BROWSE_EXE);
         SubclassHoverButton(hBtnExe);
         y += rowH + BlitTheme::Scale(14, dpi);
 
         HWND hChkToast = makeCtrl(L"BUTTON", L"Show Action Center toast preview after capture",
-            BS_OWNERDRAW, 0, pad, y, fullW, rowH, ID_CHK_TOAST);
+            BS_OWNERDRAW | WS_TABSTOP, 0, pad, y, fullW, rowH, ID_CHK_TOAST);
         SubclassHoverButton(hChkToast);
         y += rowH + BlitTheme::Scale(22, dpi);
 
@@ -238,20 +244,23 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
         int shutdownW = BlitTheme::Scale(136, dpi);
         int actionW = BlitTheme::Scale(84, dpi);
 
-        HWND hBtnShut = makeCtrl(L"BUTTON", L"Shutdown BlitSnap", BS_OWNERDRAW, 0,
+        HWND hBtnShut = makeCtrl(L"BUTTON", L"Shutdown BlitSnap", BS_OWNERDRAW | WS_TABSTOP, 0,
             pad, y, shutdownW, btnH, ID_BTN_SHUTDOWN);
         SubclassHoverButton(hBtnShut);
 
-        HWND hBtnSave = makeCtrl(L"BUTTON", L"Save", BS_OWNERDRAW, 0,
+        HWND hBtnSave = makeCtrl(L"BUTTON", L"Save", BS_OWNERDRAW | WS_TABSTOP, 0,
             pad + fullW - actionW * 2 - gap, y, actionW, btnH, ID_BTN_SAVE, true);
         SubclassHoverButton(hBtnSave);
 
-        HWND hBtnCancel = makeCtrl(L"BUTTON", L"Cancel", BS_OWNERDRAW, 0,
+        HWND hBtnCancel = makeCtrl(L"BUTTON", L"Cancel", BS_OWNERDRAW | WS_TABSTOP, 0,
             pad + fullW - actionW, y, actionW, btnH, ID_BTN_CANCEL);
         SubclassHoverButton(hBtnCancel);
 
         return 0;
     }
+
+    case DM_GETDEFID:
+        return MAKELRESULT(ID_BTN_SAVE, DC_HASDEFID);
 
     case WM_ERASEBKGND: {
         HDC hdc = reinterpret_cast<HDC>(wParam);
@@ -281,9 +290,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
         auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
         if (!dis) break;
 
-        HDC hdc = GetDC(hWnd);
-        UINT dpi = static_cast<UINT>(GetDeviceCaps(hdc, LOGPIXELSX));
-        ReleaseDC(hWnd, hdc);
+        UINT dpi = GetDpiForWindow(hWnd);
         if (dpi == 0) dpi = 96;
 
         if (GetPropW(dis->hwndItem, L"Hover") != nullptr) {
@@ -349,6 +356,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
                 return 0;
             }
 
+            case IDOK:
             case ID_BTN_SAVE: {
                 wchar_t buf[1024] = {};
                 g_config.autoSave = g_chkAutoSave;
@@ -368,6 +376,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
                 return 0;
             }
 
+            case IDCANCEL:
             case ID_BTN_CANCEL:
                 DestroyWindow(hWnd);
                 return 0;
@@ -415,19 +424,25 @@ void ShowSettingsWindow() {
         return;
     }
 
-    HDC hdc = GetDC(nullptr);
-    UINT dpi = static_cast<UINT>(GetDeviceCaps(hdc, LOGPIXELSX));
-    ReleaseDC(nullptr, hdc);
-    if (dpi == 0) dpi = 96;
+    POINT ptCursor = {};
+    GetCursorPos(&ptCursor);
+    HMONITOR hMon = MonitorFromPoint(ptCursor, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(mi) };
+    GetMonitorInfoW(hMon, &mi);
+
+    UINT dpiX = 96, dpiY = 96;
+    if (FAILED(GetDpiForMonitor(hMon, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) || dpiX == 0) {
+        dpiX = 96;
+    }
 
     DWORD style = WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
-    RECT rcClient = { 0, 0, BlitTheme::Scale(500, dpi), BlitTheme::Scale(334, dpi) };
+    RECT rcClient = { 0, 0, BlitTheme::Scale(500, dpiX), BlitTheme::Scale(334, dpiX) };
     AdjustWindowRectEx(&rcClient, style, FALSE, 0);
 
     int w = rcClient.right - rcClient.left;
     int h = rcClient.bottom - rcClient.top;
-    int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
-    int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
+    int x = mi.rcWork.left + ((mi.rcWork.right - mi.rcWork.left) - w) / 2;
+    int y = mi.rcWork.top + ((mi.rcWork.bottom - mi.rcWork.top) - h) / 2;
 
     g_hSettingsWnd = CreateWindowExW(
         0,

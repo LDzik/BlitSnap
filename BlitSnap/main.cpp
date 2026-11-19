@@ -153,6 +153,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (IsSettingsDialogMessage(&msg)) {
+            continue;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
