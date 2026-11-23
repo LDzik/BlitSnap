@@ -82,6 +82,7 @@ struct AppState {
     int                         vh = 0;
     DibSurface                  pristine = {};
     DibSurface                  dimmed = {};
+    DibSurface                  classicSnapshot = {};
 
     DibSurface                       desktopLayer{};
     std::vector<WindowLayer>         layers;
@@ -90,6 +91,7 @@ struct AppState {
 
     std::vector<MonitorOverlay> overlays;
     std::vector<RECT>           windowRects;
+    std::vector<RECT>           classicWindowRects;
 
 
     bool                        isDragging = false;

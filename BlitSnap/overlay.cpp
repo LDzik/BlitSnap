@@ -607,8 +607,11 @@ void BeginCaptureSession() {
     EnumDisplayMonitors(nullptr, nullptr, EnumMonitorsProc, 0);
     if (g_app.overlays.empty()) {
         FreeLayerStack();
+        FreeDibSurface(g_app.classicSnapshot);
         FreeDibSurface(g_app.pristine);
         FreeDibSurface(g_app.dimmed);
+        g_app.windowRects.clear();
+        g_app.classicWindowRects.clear();
         return;
     }
 
@@ -709,11 +712,13 @@ void EndCaptureSession() {
         }
     }
     g_app.overlays.clear();
-    g_app.windowRects.clear();
 
     FreeLayerStack();
+    FreeDibSurface(g_app.classicSnapshot);
     FreeDibSurface(g_app.pristine);
     FreeDibSurface(g_app.dimmed);
+    g_app.windowRects.clear();
+    g_app.classicWindowRects.clear();
 
 
     g_app.hLastLoupeWnd = nullptr;

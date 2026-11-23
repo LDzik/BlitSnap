@@ -43,7 +43,6 @@ static bool       g_trackingLeave = false;
 static bool       g_draggingPill = false;
 static POINT      g_pillDragStart = {};
 
-// Layers popup state
 static HWND  g_hLayersPopup = nullptr;
 static HFONT g_hLayerTitleFont = nullptr;
 static HFONT g_hLayerSubFont = nullptr;
@@ -337,9 +336,7 @@ static void DrawGlyph(HDC hdc, int btn, const RECT& rc, UINT dpi) {
         int halfW = ScalePx(6, dpi);
         int halfH = ScalePx(4, dpi);
 
-        // Back layer (top-left)
         Rectangle(hdc, cx - halfW - off / 2, cy - halfH - off, cx + halfW - off / 2, cy + halfH - off);
-        // Front layer (bottom-right)
         Rectangle(hdc, cx - halfW + off / 2, cy - halfH + off, cx + halfW + off / 2, cy + halfH + off);
         break;
     }

@@ -11,7 +11,6 @@ void SetToolbarVisible(bool visible);
 void RepaintToolbar();
 bool GetPillAnchorRect(int anchorIndex, RECT& outRect);
 
-// Layers popup controls
 bool IsLayersPopupOpen();
 void ToggleLayersPopup();
 void CloseLayersPopup();

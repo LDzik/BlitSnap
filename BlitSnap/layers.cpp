@@ -531,44 +531,39 @@ void ToggleCaptureLayerMode() {
     }
 
     if (g_config.layerMode) {
-        if (g_app.layers.empty()) {
+        if (!g_app.desktopLayer.hDC) {
             CaptureLayerStack();
         }
         RecompositeLayers();
     }
     else {
-        for (const auto& mon : g_app.overlays) {
-            if (mon.hWnd) ShowWindow(mon.hWnd, SW_HIDE);
+        if (IsLayersPopupOpen()) {
+            CloseLayersPopup();
         }
-        SetToolbarVisible(false);
-        Sleep(30);
 
-        HDC hScreenDC = GetDC(nullptr);
-        if (hScreenDC && g_app.pristine.hDC) {
-            BitBlt(g_app.pristine.hDC, 0, 0, g_app.vw, g_app.vh, hScreenDC, g_app.vx, g_app.vy, SRCCOPY | CAPTUREBLT);
-            ReleaseDC(nullptr, hScreenDC);
+        if (g_app.classicSnapshot.hDC && g_app.pristine.hDC && g_app.dimmed.pixels) {
+            BitBlt(
+                g_app.pristine.hDC,
+                0, 0, g_app.vw, g_app.vh,
+                g_app.classicSnapshot.hDC,
+                0, 0,
+                SRCCOPY);
             DimPixelsSSE2(g_app.pristine.pixels, g_app.dimmed.pixels, g_app.vw * g_app.vh);
         }
 
-        SnapshotVisibleWindows();
+        g_app.windowRects = g_app.classicWindowRects;
         g_app.hoveredLayerIndex = -1;
         SetRectEmpty(&g_app.rcHoveredWin);
+
         if (g_app.mode == CaptureMode::Window) {
-            for (const RECT& rc : g_app.windowRects) {
-                if (PtInRect(&rc, g_app.ptCursor)) {
-                    g_app.rcHoveredWin = rc;
-                    break;
-                }
-            }
+            UpdateHoveredWindowAt(g_app.ptCursor);
         }
 
         for (const auto& mon : g_app.overlays) {
             if (mon.hWnd) {
-                ShowWindow(mon.hWnd, SW_SHOWNA);
                 InvalidateRect(mon.hWnd, nullptr, FALSE);
                 UpdateWindow(mon.hWnd);
             }
         }
-        SetToolbarVisible(true);
     }
 }

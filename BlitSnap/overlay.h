@@ -7,3 +7,4 @@ void EndCaptureSession();
 void SetCaptureMode(CaptureMode newMode);
 void CaptureFullVirtualScreen();
 void RefreshOverlayVisuals();
+void UpdateHoveredWindowAt(POINT pt);

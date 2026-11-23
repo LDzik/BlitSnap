@@ -93,42 +93,63 @@ bool CaptureAndPrepareBuffers() {
 
     FreeDibSurface(g_app.pristine);
     FreeDibSurface(g_app.dimmed);
+    FreeDibSurface(g_app.classicSnapshot);
 
     if (!CreateDibSurface(g_app.pristine, g_app.vw, g_app.vh) ||
-        !CreateDibSurface(g_app.dimmed, g_app.vw, g_app.vh)) {
+        !CreateDibSurface(g_app.dimmed, g_app.vw, g_app.vh) ||
+        !CreateDibSurface(g_app.classicSnapshot, g_app.vw, g_app.vh)) {
         FreeDibSurface(g_app.pristine);
         FreeDibSurface(g_app.dimmed);
+        FreeDibSurface(g_app.classicSnapshot);
         return false;
-    }
-
-    if (g_config.layerMode) {
-        if (CaptureLayerStack()) {
-            RecompositeLayers();
-            return true;
-        }
     }
 
     HDC hScreenDC = GetDC(nullptr);
     if (!hScreenDC) {
         FreeDibSurface(g_app.pristine);
         FreeDibSurface(g_app.dimmed);
+        FreeDibSurface(g_app.classicSnapshot);
         return false;
     }
 
-    bool ok = BitBlt(g_app.pristine.hDC, 0, 0, g_app.vw, g_app.vh, hScreenDC, g_app.vx, g_app.vy, SRCCOPY | CAPTUREBLT) != FALSE;
+    bool ok = BitBlt(
+        g_app.classicSnapshot.hDC,
+        0, 0, g_app.vw, g_app.vh,
+        hScreenDC,
+        g_app.vx, g_app.vy,
+        SRCCOPY | CAPTUREBLT) != FALSE;
     ReleaseDC(nullptr, hScreenDC);
 
     if (!ok) {
         FreeDibSurface(g_app.pristine);
         FreeDibSurface(g_app.dimmed);
+        FreeDibSurface(g_app.classicSnapshot);
         return false;
     }
 
-    DimPixelsSSE2(g_app.pristine.pixels, g_app.dimmed.pixels, g_app.vw * g_app.vh);
+    bool hasLayers = CaptureLayerStack();
+
+    if (g_config.layerMode && hasLayers) {
+        RecompositeLayers();
+    }
+    else {
+        BitBlt(
+            g_app.pristine.hDC,
+            0, 0, g_app.vw, g_app.vh,
+            g_app.classicSnapshot.hDC,
+            0, 0,
+            SRCCOPY);
+        DimPixelsSSE2(g_app.pristine.pixels, g_app.dimmed.pixels, g_app.vw * g_app.vh);
+        g_app.windowRects = g_app.classicWindowRects;
+    }
+
     return true;
 }
 
-static BOOL CALLBACK EnumWindowsSnapProc(HWND hWnd, LPARAM) {
+static BOOL CALLBACK EnumWindowsSnapProc(HWND hWnd, LPARAM lParam) {
+    auto* outRects = reinterpret_cast<std::vector<RECT>*>(lParam);
+    if (!outRects) return FALSE;
+
     if (!IsWindowVisible(hWnd) || IsIconic(hWnd)) return TRUE;
 
     DWORD pid = 0;
@@ -152,11 +173,12 @@ static BOOL CALLBACK EnumWindowsSnapProc(HWND hWnd, LPARAM) {
 
     if (rcBounds.right <= rcBounds.left || rcBounds.bottom <= rcBounds.top) return TRUE;
 
-    g_app.windowRects.push_back(rcBounds);
+    outRects->push_back(rcBounds);
     return TRUE;
 }
 
 void SnapshotVisibleWindows() {
-    g_app.windowRects.clear();
-    EnumWindows(EnumWindowsSnapProc, 0);
+    g_app.classicWindowRects.clear();
+    EnumWindows(EnumWindowsSnapProc, reinterpret_cast<LPARAM>(&g_app.classicWindowRects));
+    g_app.windowRects = g_app.classicWindowRects;
 }
