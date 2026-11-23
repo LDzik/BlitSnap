@@ -33,6 +33,17 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                 return 1;
             }
 
+            if ((g_app.isCapturing || IsDelayedCaptureActive()) &&
+                (kb->vkCode == VK_LWIN || kb->vkCode == VK_RWIN)) {
+                bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                if (!shiftDown && !ctrlDown && !altDown) {
+                    if (g_app.hMsgWnd) PostMessageW(g_app.hMsgWnd, WM_APP_CANCEL_CAPTURE, 1, 0);
+                    return CallNextHookEx(g_app.hKeyHook, nCode, wParam, lParam);
+                }
+            }
+
             if (g_app.isCapturing && kb->vkCode == VK_SPACE) {
                 if (g_app.hMsgWnd) PostMessageW(g_app.hMsgWnd, WM_APP_TOGGLE_LOUPE, 0, 0);
                 return 1;
@@ -89,7 +100,7 @@ static LRESULT CALLBACK MsgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         return 0;
 
     case WM_APP_CANCEL_CAPTURE:
-        if (IsLayersPopupOpen()) {
+        if (wParam == 0 && IsLayersPopupOpen()) {
             CloseLayersPopup();
             return 0;
         }

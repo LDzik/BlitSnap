@@ -1,6 +1,7 @@
 #include "capture.h"
 #include "config.h"
 #include "layers.h"
+#include <algorithm>
 #include <dwmapi.h>
 #include <emmintrin.h>
 
@@ -81,6 +82,34 @@ void DimPixelsSSE2(const uint32_t* src, uint32_t* dst, int pixelCount) {
     }
 }
 
+static void DismissOpenShellFlyouts(const std::vector<ShellFlyoutInfo>& flyouts) {
+    for (const auto& flyout : flyouts) {
+        if (flyout.hWnd && IsWindow(flyout.hWnd)) {
+            PostMessageW(flyout.hWnd, WM_CANCELMODE, 0, 0);
+            PostMessageW(flyout.hWnd, WM_ACTIVATE, MAKEWPARAM(WA_INACTIVE, 0), 0);
+        }
+    }
+
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_ESCAPE;
+    inputs[0].ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_ESCAPE, MAPVK_VK_TO_VSC));
+
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = VK_ESCAPE;
+    inputs[1].ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_ESCAPE, MAPVK_VK_TO_VSC));
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+
+    SendInput(2, inputs, sizeof(INPUT));
+
+    HWND hShell = GetShellWindow();
+    if (hShell) {
+        SetForegroundWindow(hShell);
+    }
+
+    Sleep(60);
+}
+
 bool CaptureAndPrepareBuffers() {
     g_app.vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     g_app.vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -127,7 +156,12 @@ bool CaptureAndPrepareBuffers() {
         return false;
     }
 
-    bool hasLayers = CaptureLayerStack();
+    std::vector<ShellFlyoutInfo> activeFlyouts = CollectActiveShellFlyouts();
+    bool hasLayers = CaptureLayerStack(&activeFlyouts);
+
+    if (!activeFlyouts.empty()) {
+        DismissOpenShellFlyouts(activeFlyouts);
+    }
 
     if (g_config.layerMode && hasLayers) {
         RecompositeLayers();
@@ -146,9 +180,22 @@ bool CaptureAndPrepareBuffers() {
     return true;
 }
 
+struct SnapEnumContext {
+    std::vector<RECT>* outRects = nullptr;
+    const std::vector<ShellFlyoutInfo>* flyouts = nullptr;
+};
+
 static BOOL CALLBACK EnumWindowsSnapProc(HWND hWnd, LPARAM lParam) {
-    auto* outRects = reinterpret_cast<std::vector<RECT>*>(lParam);
-    if (!outRects) return FALSE;
+    auto* ctx = reinterpret_cast<SnapEnumContext*>(lParam);
+    if (!ctx || !ctx->outRects) return FALSE;
+
+    if (ctx->flyouts) {
+        for (const auto& flyout : *ctx->flyouts) {
+            if (flyout.hWnd == hWnd) {
+                return TRUE;
+            }
+        }
+    }
 
     if (!IsWindowVisible(hWnd) || IsIconic(hWnd)) return TRUE;
 
@@ -159,7 +206,7 @@ static BOOL CALLBACK EnumWindowsSnapProc(HWND hWnd, LPARAM lParam) {
     if (hWnd == GetShellWindow()) return TRUE;
 
     LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
-    if (exStyle & WS_EX_TOOLWINDOW) return TRUE;
+    if ((exStyle & WS_EX_TOOLWINDOW) && !IsShellFlyoutWindow(hWnd)) return TRUE;
 
     DWORD cloaked = 0;
     if (SUCCEEDED(DwmGetWindowAttribute(hWnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
@@ -173,12 +220,24 @@ static BOOL CALLBACK EnumWindowsSnapProc(HWND hWnd, LPARAM lParam) {
 
     if (rcBounds.right <= rcBounds.left || rcBounds.bottom <= rcBounds.top) return TRUE;
 
-    outRects->push_back(rcBounds);
+    ctx->outRects->push_back(rcBounds);
     return TRUE;
 }
 
 void SnapshotVisibleWindows() {
     g_app.classicWindowRects.clear();
-    EnumWindows(EnumWindowsSnapProc, reinterpret_cast<LPARAM>(&g_app.classicWindowRects));
+
+    std::vector<ShellFlyoutInfo> flyouts = CollectActiveShellFlyouts();
+    for (const auto& flyout : flyouts) {
+        if (flyout.rcExtended.right > flyout.rcExtended.left &&
+            flyout.rcExtended.bottom > flyout.rcExtended.top) {
+            g_app.classicWindowRects.push_back(flyout.rcExtended);
+        }
+    }
+
+    SnapEnumContext ctx{};
+    ctx.outRects = &g_app.classicWindowRects;
+    ctx.flyouts = &flyouts;
+    EnumWindows(EnumWindowsSnapProc, reinterpret_cast<LPARAM>(&ctx));
     g_app.windowRects = g_app.classicWindowRects;
 }

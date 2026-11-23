@@ -52,6 +52,8 @@ struct WindowLayer {
     bool         visible = true;
     bool         autoHidden = false;
     bool         isTaskbar = false;
+    bool         isShellFlyout = false;
+    bool         isDesktopIcons = false;
 };
 
 struct MonitorOverlay {

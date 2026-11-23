@@ -83,10 +83,34 @@ static UINT GetPrimaryMonitorDpi(RECT& outWorkArea) {
     return dpiX;
 }
 
+static std::vector<size_t> GetPopupDisplayLayerIndices() {
+    std::vector<size_t> indices;
+    indices.reserve(g_app.layers.size());
+    for (size_t i = 0; i < g_app.layers.size(); ++i) {
+        const WindowLayer& layer = g_app.layers[i];
+        if (layer.isShellFlyout && layer.rootOwnerHwnd != nullptr) {
+            bool seenGroup = false;
+            for (size_t prevIdx : indices) {
+                if (g_app.layers[prevIdx].isShellFlyout &&
+                    g_app.layers[prevIdx].rootOwnerHwnd == layer.rootOwnerHwnd) {
+                    seenGroup = true;
+                    break;
+                }
+            }
+            if (seenGroup) {
+                continue;
+            }
+        }
+        indices.push_back(i);
+    }
+    return indices;
+}
+
 static int CountHiddenLayers() {
+    std::vector<size_t> displayIndices = GetPopupDisplayLayerIndices();
     int hidden = 0;
-    for (const auto& layer : g_app.layers) {
-        if (!layer.visible) ++hidden;
+    for (size_t idx : displayIndices) {
+        if (!g_app.layers[idx].visible) ++hidden;
     }
     return hidden;
 }
@@ -98,7 +122,7 @@ static PopupLayout ComputePopupLayout(UINT dpi) {
     L.rowH = BlitTheme::Scale(32, dpi);
     L.padX = BlitTheme::Scale(10, dpi);
 
-    int totalRows = static_cast<int>(g_app.layers.size());
+    int totalRows = static_cast<int>(GetPopupDisplayLayerIndices().size());
     L.visibleRows = (totalRows == 0)
         ? 1
         : (std::min)(totalRows, kPopupMaxVisibleRows);
@@ -128,7 +152,7 @@ static RECT GetRowPrivacyLockRect(const PopupLayout& L, int visRow, UINT dpi) {
     int top = L.headerH + visRow * L.rowH;
     int lockW = BlitTheme::Scale(26, dpi);
     int lockH = BlitTheme::Scale(20, dpi);
-    int rightPad = (static_cast<int>(g_app.layers.size()) > kPopupMaxVisibleRows)
+    int rightPad = (static_cast<int>(GetPopupDisplayLayerIndices().size()) > kPopupMaxVisibleRows)
         ? L.padX + BlitTheme::Scale(6, dpi)
         : L.padX;
     int x = L.width - rightPad - lockW;
@@ -671,7 +695,8 @@ static void PaintLayersPopup(HWND hWnd) {
     SetBkMode(hMemDC, TRANSPARENT);
     HGDIOBJ hOldFont = SelectObject(hMemDC, g_hLayerTitleFont);
 
-    int totalCount = static_cast<int>(g_app.layers.size());
+    std::vector<size_t> displayIndices = GetPopupDisplayLayerIndices();
+    int totalCount = static_cast<int>(displayIndices.size());
     int hiddenCount = CountHiddenLayers();
     int visibleCount = totalCount - hiddenCount;
 
@@ -709,7 +734,8 @@ static void PaintLayersPopup(HWND hWnd) {
             int idx = g_popupScrollIdx + visRow;
             if (idx >= totalCount) break;
 
-            const WindowLayer& layer = g_app.layers[idx];
+            size_t layerIdx = displayIndices[idx];
+            const WindowLayer& layer = g_app.layers[layerIdx];
             int rowTop = L.headerH + visRow * L.rowH;
             RECT rcRow{ 1, rowTop, w - 1, rowTop + L.rowH };
 
@@ -720,7 +746,7 @@ static void PaintLayersPopup(HWND hWnd) {
             }
 
             RECT rcChk = GetRowCheckboxRect(L, visRow, g_popupDpi);
-            if (layer.rootOwnerHwnd != nullptr) {
+            if (layer.rootOwnerHwnd != nullptr && !layer.isShellFlyout) {
                 int indent = BlitTheme::Scale(8, g_popupDpi);
                 rcChk.left += indent;
                 rcChk.right += indent;
@@ -761,9 +787,10 @@ static void PaintLayersPopup(HWND hWnd) {
             }
 
             RECT rcLock = GetRowPrivacyLockRect(L, visRow, g_popupDpi);
-            bool isLocked = !layer.isTaskbar && IsProcessHiddenInConfig(layer.processName);
+            bool noPrivacyLock = layer.isTaskbar || layer.isDesktopIcons;
+            bool isLocked = !noPrivacyLock && IsProcessHiddenInConfig(layer.processName);
 
-            if (!layer.isTaskbar) {
+            if (!noPrivacyLock) {
                 bool isLockHovered = (g_popupHoverRow == idx && g_popupHoverLock);
 
                 COLORREF lockFill = isLocked
@@ -790,7 +817,7 @@ static void PaintLayersPopup(HWND hWnd) {
             }
 
             int textLeft = rcChk.right + BlitTheme::Scale(8, g_popupDpi);
-            int textRight = (layer.isTaskbar ? rcLock.right : rcLock.left) - BlitTheme::Scale(8, g_popupDpi);
+            int textRight = (noPrivacyLock ? rcLock.right : rcLock.left) - BlitTheme::Scale(8, g_popupDpi);
 
             if (!layer.processName.empty() && textRight - textLeft > BlitTheme::Scale(110, g_popupDpi)) {
                 int procW = BlitTheme::Scale(84, g_popupDpi);
@@ -858,16 +885,18 @@ static LRESULT CALLBACK LayersPopupWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         PopupLayout L = ComputePopupLayout(g_popupDpi);
 
+        std::vector<size_t> displayIndices = GetPopupDisplayLayerIndices();
         int newHoverRow = -1;
         bool newHoverLock = false;
         bool newHoverReset = (CountHiddenLayers() > 0) && PtInRect(&L.rcShowAll, pt);
 
-        if (!newHoverReset && pt.y >= L.headerH && !g_app.layers.empty()) {
+        if (!newHoverReset && pt.y >= L.headerH && !displayIndices.empty()) {
             int visRow = (pt.y - L.headerH) / L.rowH;
             int idx = g_popupScrollIdx + visRow;
-            if (visRow >= 0 && visRow < L.visibleRows && idx < static_cast<int>(g_app.layers.size())) {
+            if (visRow >= 0 && visRow < L.visibleRows && idx < static_cast<int>(displayIndices.size())) {
+                size_t layerIdx = displayIndices[idx];
                 newHoverRow = idx;
-                if (!g_app.layers[idx].isTaskbar) {
+                if (!g_app.layers[layerIdx].isTaskbar && !g_app.layers[layerIdx].isDesktopIcons) {
                     RECT rcLock = GetRowPrivacyLockRect(L, visRow, g_popupDpi);
                     newHoverLock = PtInRect(&rcLock, pt) != FALSE;
                 }
@@ -895,7 +924,7 @@ static LRESULT CALLBACK LayersPopupWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         return 0;
 
     case WM_MOUSEWHEEL: {
-        int totalCount = static_cast<int>(g_app.layers.size());
+        int totalCount = static_cast<int>(GetPopupDisplayLayerIndices().size());
         if (totalCount > kPopupMaxVisibleRows) {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
             g_popupScrollIdx += (delta > 0) ? -1 : 1;
@@ -917,20 +946,24 @@ static LRESULT CALLBACK LayersPopupWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             return 0;
         }
 
-        if (pt.y >= L.headerH && !g_app.layers.empty()) {
+        std::vector<size_t> displayIndices = GetPopupDisplayLayerIndices();
+        if (pt.y >= L.headerH && !displayIndices.empty()) {
             int visRow = (pt.y - L.headerH) / L.rowH;
             int idx = g_popupScrollIdx + visRow;
-            if (visRow >= 0 && visRow < L.visibleRows && idx < static_cast<int>(g_app.layers.size())) {
+            if (visRow >= 0 && visRow < L.visibleRows && idx < static_cast<int>(displayIndices.size())) {
+                size_t layerIdx = displayIndices[idx];
                 RECT rcLock = GetRowPrivacyLockRect(L, visRow, g_popupDpi);
-                if (!g_app.layers[idx].isTaskbar && PtInRect(&rcLock, pt)) {
-                    const std::wstring exe = g_app.layers[idx].processName;
+                if (!g_app.layers[layerIdx].isTaskbar &&
+                    !g_app.layers[layerIdx].isDesktopIcons &&
+                    PtInRect(&rcLock, pt)) {
+                    const std::wstring exe = g_app.layers[layerIdx].processName;
                     if (!exe.empty()) {
                         bool nextLocked = !IsProcessHiddenInConfig(exe);
                         ApplyProcessPrivacyLock(exe, nextLocked);
                     }
                 }
                 else {
-                    ToggleLayerGroupVisibility(static_cast<size_t>(idx));
+                    ToggleLayerGroupVisibility(layerIdx);
                 }
                 RepaintToolbar();
                 RepaintLayersPopup();
