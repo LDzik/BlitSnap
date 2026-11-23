@@ -65,6 +65,7 @@ public:
     }
 };
 
+#ifndef _DEBUG
 static void RegisterComLocalServerInHkcu(const wchar_t* exePath) {
     wchar_t subkey[256] = {};
     swprintf_s(subkey, L"Software\\Classes\\CLSID\\%s\\LocalServer32", kActivatorClsidStr);
@@ -120,16 +121,19 @@ static void EnsureStartMenuShortcut(const wchar_t* exePath) {
         persistFile->Save(lnkPath, TRUE);
     }
 }
+#endif
 
 void InitToastSubsystem() {
     SetCurrentProcessExplicitAppUserModelID(kAppUserModelId);
     RoInitialize(RO_INIT_SINGLETHREADED);
 
+#ifndef _DEBUG
     wchar_t exePath[MAX_PATH] = {};
     if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0) {
         RegisterComLocalServerInHkcu(exePath);
         EnsureStartMenuShortcut(exePath);
     }
+#endif
 
     auto factory = Make<BlitSnapToastClassFactory>();
     if (factory) {
