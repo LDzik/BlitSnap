@@ -275,13 +275,10 @@ namespace {
             return;
         }
 
-        size_t pixelCount = static_cast<size_t>(w) * static_cast<size_t>(h);
+        const size_t pixelCount = static_cast<size_t>(w) * static_cast<size_t>(h);
         std::memset(tmpIcons.pixels, 0, pixelCount * sizeof(uint32_t));
 
-        BOOL ok = PrintWindow(hListView, tmpIcons.hDC, PW_RENDERFULLCONTENT);
-        if (!ok) {
-            ok = PrintWindow(hListView, tmpIcons.hDC, 0);
-        }
+        BOOL ok = PrintWindow(hListView, tmpIcons.hDC, 0);
         GdiFlush();
 
         if (!ok) {
@@ -295,53 +292,45 @@ namespace {
             return;
         }
 
-        bool hasAlpha = false;
+        size_t opaqueCount = 0;
         for (size_t i = 0; i < pixelCount; ++i) {
-            if ((tmpIcons.pixels[i] & 0xFF000000u) != 0) {
-                hasAlpha = true;
-                break;
+            if ((tmpIcons.pixels[i] >> 24) == 0xFFu) {
+                ++opaqueCount;
             }
         }
+        const bool forcedOpaqueAlpha =
+            (static_cast<uint64_t>(opaqueCount) * 100ull) > (static_cast<uint64_t>(pixelCount) * 95ull);
 
-        if (hasAlpha) {
-            for (size_t i = 0; i < pixelCount; ++i) {
-                uint32_t px = tmpIcons.pixels[i];
-                uint32_t a = (px >> 24) & 0xFFu;
-                if (a == 0) {
-                    layer.surface.pixels[i] = 0;
+        for (size_t i = 0; i < pixelCount; ++i) {
+            const uint32_t px = tmpIcons.pixels[i];
+            const uint8_t rawA = forcedOpaqueAlpha ? 0 : static_cast<uint8_t>((px >> 24) & 0xFFu);
+            uint8_t r = static_cast<uint8_t>((px >> 16) & 0xFFu);
+            uint8_t g = static_cast<uint8_t>((px >> 8) & 0xFFu);
+            uint8_t b = static_cast<uint8_t>(px & 0xFFu);
+
+            if (rawA > 0) {
+                const uint8_t alpha = rawA;
+                if (r > alpha || g > alpha || b > alpha) {
+                    r = static_cast<uint8_t>((static_cast<uint32_t>(r) * alpha + 127u) / 255u);
+                    g = static_cast<uint8_t>((static_cast<uint32_t>(g) * alpha + 127u) / 255u);
+                    b = static_cast<uint8_t>((static_cast<uint32_t>(b) * alpha + 127u) / 255u);
                 }
-                else if (a == 255) {
-                    layer.surface.pixels[i] = px;
-                }
-                else {
-                    uint32_t r = (((px >> 16) & 0xFFu) * a + 127u) / 255u;
-                    uint32_t g = (((px >> 8) & 0xFFu) * a + 127u) / 255u;
-                    uint32_t b = ((px & 0xFFu) * a + 127u) / 255u;
-                    layer.surface.pixels[i] = (a << 24) | (r << 16) | (g << 8) | b;
-                }
+                layer.surface.pixels[i] =
+                    (static_cast<uint32_t>(alpha) << 24) |
+                    (static_cast<uint32_t>(r) << 16) |
+                    (static_cast<uint32_t>(g) << 8) |
+                    static_cast<uint32_t>(b);
             }
-        }
-        else {
-            for (size_t i = 0; i < pixelCount; ++i) {
-                uint32_t px = tmpIcons.pixels[i];
-                uint32_t r = (px >> 16) & 0xFFu;
-                uint32_t g = (px >> 8) & 0xFFu;
-                uint32_t b = px & 0xFFu;
-                uint32_t maxC = (std::max)(r, (std::max)(g, b));
-
-                if (maxC == 0) {
-                    layer.surface.pixels[i] = 0x00000000u;
-                }
-                else if (maxC >= 48) {
-                    layer.surface.pixels[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
-                }
-                else {
-                    uint32_t alpha = (maxC * 255u) / 48u;
-                    uint32_t pr = (r * alpha + 127u) / 255u;
-                    uint32_t pg = (g * alpha + 127u) / 255u;
-                    uint32_t pb = (b * alpha + 127u) / 255u;
-                    layer.surface.pixels[i] = (alpha << 24) | (pr << 16) | (pg << 8) | pb;
-                }
+            else if (r == 0 && g == 0 && b == 0) {
+                layer.surface.pixels[i] = 0x00000000u;
+            }
+            else {
+                const uint8_t alpha = (std::max)({ r, g, b });
+                layer.surface.pixels[i] =
+                    (static_cast<uint32_t>(alpha) << 24) |
+                    (static_cast<uint32_t>(r) << 16) |
+                    (static_cast<uint32_t>(g) << 8) |
+                    static_cast<uint32_t>(b);
             }
         }
 
